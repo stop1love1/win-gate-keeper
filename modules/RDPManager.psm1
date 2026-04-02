@@ -265,6 +265,47 @@ function Show-RDPStatus {
     Pause-Menu
 }
 
+function Show-ActiveRDPSessions {
+    Write-MenuHeader "Active RDP Sessions"
+
+    Write-Host ""
+    if (-not (Get-Command quser -ErrorAction SilentlyContinue)) {
+        Write-Step "quser not available (Server Core)." -Type Warning
+        Pause-Menu
+        return
+    }
+
+    $quser = quser 2>&1 | Where-Object { $_ -is [string] }
+    if ($quser -and $quser.Count -gt 1) {
+        Write-Host "  $($quser[0].Trim())" -ForegroundColor White
+        Write-Host ("  " + "-" * 56) -ForegroundColor DarkGray
+        foreach ($line in ($quser | Select-Object -Skip 1)) {
+            $trimmed = $line.Trim()
+            if ($trimmed) { Write-Host "  $trimmed" -ForegroundColor Cyan }
+        }
+
+        # Show RDP network connections
+        Write-Host ""
+        Write-Host "  Network Connections (port 3389):" -ForegroundColor White
+        Write-Host ("  " + "-" * 56) -ForegroundColor DarkGray
+        $connections = Get-NetTCPConnection -LocalPort 3389 -State Established -ErrorAction SilentlyContinue
+        if ($connections) {
+            foreach ($conn in $connections) {
+                Write-Host "  $($conn.RemoteAddress):$($conn.RemotePort)" -ForegroundColor Cyan
+            }
+        }
+        else {
+            Write-Host "  (no established connections)" -ForegroundColor DarkGray
+        }
+    }
+    else {
+        Write-Step "No active RDP sessions." -Type Info
+    }
+
+    Write-Host ""
+    Pause-Menu
+}
+
 function Disconnect-RDPSession {
     Write-MenuHeader "Disconnect RDP Session"
 
@@ -348,7 +389,7 @@ function Show-RDPMenu {
                 Revoke-RDPAccess
                 Pause-Menu
             }
-            "6" { Show-RDPStatus }
+            "6" { Show-ActiveRDPSessions }
             "7" { Disconnect-RDPSession }
             "B" { return }
         }

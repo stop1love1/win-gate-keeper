@@ -170,7 +170,6 @@ function Edit-Configuration {
     Write-Host "  Logs Path:        $($settings.LogsPath)" -ForegroundColor Cyan
     Write-Host "  SSH Config:       $($settings.SSHConfigPath)" -ForegroundColor Cyan
     Write-Host "  SFTP Group:       $($settings.SFTPOnlyGroup)" -ForegroundColor Cyan
-    Write-Host "  Admin Group:      $($settings.AdminGroup)" -ForegroundColor Cyan
     Write-Host "  Transcripts:      $($settings.PowerShellLogging.TranscriptionPath)" -ForegroundColor Cyan
 
     Write-Host ""

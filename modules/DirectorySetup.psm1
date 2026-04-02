@@ -3,7 +3,7 @@
 # ============================================================================
 
 Import-Module "$PSScriptRoot\Utils.psm1" -Force
-Import-Module "$PSScriptRoot\UserManagement.psm1" -Force
+# Note: Set-UserDirectoryPermissions is available from UserManagement.psm1 loaded by main.ps1
 
 function Initialize-BaseDirectories {
     Write-MenuHeader "Initialize Base Directory Structure"

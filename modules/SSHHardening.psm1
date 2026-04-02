@@ -21,6 +21,7 @@ function Set-SSHHardening {
     $directives = @{
         "Port"                 = $sshPort
         "MaxAuthTries"         = if ($ssh.MaxAuthTries) { $ssh.MaxAuthTries } else { 3 }
+        "MaxStartups"          = if ($ssh.MaxStartups) { $ssh.MaxStartups } else { "3:50:10" }
         "ClientAliveInterval"  = if ($ssh.ClientAliveInterval) { $ssh.ClientAliveInterval } else { 300 }
         "ClientAliveCountMax"  = if ($ssh.ClientAliveCountMax) { $ssh.ClientAliveCountMax } else { 2 }
         "LogLevel"             = "VERBOSE"

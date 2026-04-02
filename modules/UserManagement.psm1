@@ -3,7 +3,6 @@
 # ============================================================================
 
 Import-Module "$PSScriptRoot\Utils.psm1" -Force
-Import-Module "$PSScriptRoot\RDPManager.psm1" -Force
 
 function Compare-SecureString {
     <#
@@ -20,55 +19,6 @@ function Compare-SecureString {
     return ($cred1.Password -ceq $cred2.Password)
 }
 
-function ConvertFrom-SecureStringPlain {
-    <#
-    .SYNOPSIS
-        Convert SecureString to plaintext for validation only.
-        Uses NetworkCredential (shorter-lived than PtrToStringBSTR).
-    #>
-    param([System.Security.SecureString]$SecurePassword)
-    return (New-Object System.Net.NetworkCredential("", $SecurePassword)).Password
-}
-
-function Test-PasswordPolicy {
-    param(
-        [System.Security.SecureString]$SecurePassword,
-        [string]$Username
-    )
-
-    $settings = Get-Settings
-    $policy = if ($settings -and $settings.PasswordPolicy) { $settings.PasswordPolicy } else { $null }
-    $minLen = if ($policy -and $policy.MinLength) { $policy.MinLength } else { 8 }
-    $reqUpper = if ($policy) { $policy.RequireUppercase } else { $true }
-    $reqLower = if ($policy) { $policy.RequireLowercase } else { $true }
-    $reqDigit = if ($policy) { $policy.RequireDigit } else { $true }
-    $reqSpecial = if ($policy) { $policy.RequireSpecialChar } else { $false }
-
-    $plain = ConvertFrom-SecureStringPlain $SecurePassword
-    $errors = @()
-
-    if ($plain.Length -lt $minLen) {
-        $errors += "Must be at least $minLen characters"
-    }
-    if ($reqUpper -and $plain -cnotmatch '[A-Z]') {
-        $errors += "Must contain at least one uppercase letter"
-    }
-    if ($reqLower -and $plain -cnotmatch '[a-z]') {
-        $errors += "Must contain at least one lowercase letter"
-    }
-    if ($reqDigit -and $plain -notmatch '\d') {
-        $errors += "Must contain at least one digit"
-    }
-    if ($reqSpecial -and $plain -notmatch '[!@#$%^&*()_+\-=\[\]{}|;:,.<>?/~`]') {
-        $errors += "Must contain at least one special character"
-    }
-    if ($Username -and $plain -eq $Username) {
-        $errors += "Password cannot be the same as username"
-    }
-
-    $plain = $null
-    return $errors
-}
 
 function New-GateUser {
     Write-MenuHeader "Create New User"
@@ -210,8 +160,8 @@ function New-GateUser {
             Write-Step "Warning: Failed to add to 'Users' group: $_" -Type Warning
         }
 
-        # SFTP-only group
-        if ($isSFTPOnly) {
+        # SFTP-only group (also for RDP-only users to block SSH shell access)
+        if ($isSFTPOnly -or ($isRDP -and -not $isShell)) {
             $sftpGroup = $settings.SFTPOnlyGroup
             $group = Get-LocalGroup -Name $sftpGroup -ErrorAction SilentlyContinue
             if (-not $group) {
@@ -570,8 +520,12 @@ function Show-UserDetail {
     catch {}
     Write-Host "`r                        `r" -NoNewline  # clear "Loading..." line
 
+    $isRDPUser = $groups -contains "Remote Desktop Users"
+
     Write-Host "  User Type:         " -NoNewline
-    if ($isSFTP) { Write-Host "SFTP-only (restricted)" -ForegroundColor Yellow }
+    if ($isSFTP -and $isRDPUser) { Write-Host "RDP (Remote Desktop only)" -ForegroundColor Magenta }
+    elseif ($isSFTP) { Write-Host "SFTP-only (file transfer)" -ForegroundColor Yellow }
+    elseif ($isRDPUser) { Write-Host "Shell + RDP" -ForegroundColor Cyan }
     else { Write-Host "Shell (SSH + SFTP)" -ForegroundColor Cyan }
 
     if ($groups.Count -gt 0) {
