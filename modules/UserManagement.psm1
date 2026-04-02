@@ -1,5 +1,5 @@
 # ============================================================================
-# AdminGate - User Management Module
+# WinGateKeeper - User Management Module
 # ============================================================================
 
 Import-Module "$PSScriptRoot\Utils.psm1" -Force
@@ -196,7 +196,7 @@ function Remove-GateUser {
     $settings = Get-Settings
     if (-not $settings) { Pause-Menu; return }
 
-    # List current AdminGate users
+    # List current WinGateKeeper users
     Show-UserList
 
     Write-Host ""

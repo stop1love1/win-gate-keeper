@@ -1,16 +1,12 @@
 # ============================================================================
-# AdminGate - Utility Functions
+# WinGateKeeper - Utility Functions
 # ============================================================================
 
 function Write-Banner {
     $banner = @"
 
-     _       _           _        ____       _
-    / \   __| |_ __ ___ (_)_ __  / ___| __ _| |_ ___
-   / _ \ / _` | '_ ` _ \| | '_ \| |  _ / _` | __/ _ \
-  / ___ \ (_| | | | | | | | | | | |_| | (_| | ||  __/
- /_/   \_\__,_|_| |_| |_|_|_| |_|\____|\__,_|\__\___|
 
+       WinGateKeeper
   Windows Server Access Control & User Isolation
   -----------------------------------------------
 "@
@@ -129,20 +125,20 @@ function Write-Log {
     )
     if (-not $script:_cachedLogDir) {
         $settings = Get-Settings
-        $script:_cachedLogDir = if ($settings) { $settings.LogsPath } else { "C:\AdminGate\Logs" }
+        $script:_cachedLogDir = if ($settings) { $settings.LogsPath } else { "C:\WinGateKeeper\Logs" }
     }
     $logDir = $script:_cachedLogDir
     if (-not (Test-Path $logDir)) {
         New-Item -ItemType Directory -Path $logDir -Force | Out-Null
     }
-    $logFile = Join-Path $logDir "admingate_$(Get-Date -Format 'yyyyMMdd').log"
+    $logFile = Join-Path $logDir "wingatekeeper_$(Get-Date -Format 'yyyyMMdd').log"
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $entry = "[$timestamp] [$Level] $Message"
     try {
         Add-Content -Path $logFile -Value $entry -ErrorAction Stop
     }
     catch {
-        Write-Warning "AdminGate: Failed to write log: $_"
+        Write-Warning "WinGateKeeper: Failed to write log: $_"
     }
 }
 

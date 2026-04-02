@@ -1,5 +1,5 @@
 # ============================================================================
-# AdminGate - SFTP Configuration Module
+# WinGateKeeper - SFTP Configuration Module
 # ============================================================================
 
 Import-Module "$PSScriptRoot\Utils.psm1" -Force
@@ -50,7 +50,7 @@ function Set-SFTPChrootConfig {
 
     $matchBlock = @"
 
-# BEGIN AdminGate SFTP Configuration
+# BEGIN WinGateKeeper SFTP Configuration
 Match Group $sftpGroup
     ForceCommand internal-sftp
     ChrootDirectory $chrootDir
@@ -58,20 +58,20 @@ Match Group $sftpGroup
     AllowAgentForwarding no
     AllowTcpForwarding no
     X11Forwarding no
-# END AdminGate SFTP Configuration
+# END WinGateKeeper SFTP Configuration
 "@
 
-    # Remove existing AdminGate block if present (marker-based for safety)
+    # Remove existing WinGateKeeper or legacy AdminGate block (marker-based for safety)
     $lines = $content -split "`r?`n"
     $inBlock = $false
     $cleanedLines = @()
     foreach ($line in $lines) {
-        if ($line -match "^# BEGIN AdminGate" -or $line -eq "# AdminGate SFTP-only configuration") {
+        if ($line -match "^# BEGIN (AdminGate|WinGateKeeper)" -or $line -in @("# AdminGate SFTP-only configuration", "# WinGateKeeper SFTP-only configuration")) {
             $inBlock = $true
             continue
         }
         if ($inBlock) {
-            if ($line -match "^# END AdminGate") {
+            if ($line -match "^# END (AdminGate|WinGateKeeper)") {
                 $inBlock = $false
                 continue
             }

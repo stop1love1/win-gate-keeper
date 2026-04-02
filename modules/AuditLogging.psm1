@@ -1,5 +1,5 @@
 # ============================================================================
-# AdminGate - Audit Policy & PowerShell Logging Module
+# WinGateKeeper - Audit Policy & PowerShell Logging Module
 # ============================================================================
 
 Import-Module "$PSScriptRoot\Utils.psm1" -Force
@@ -237,12 +237,16 @@ function Show-AuditStatus {
 }
 
 function Show-RecentLogs {
-    Write-MenuHeader "Recent AdminGate Logs"
+    Write-MenuHeader "Recent WinGateKeeper Logs"
 
     $settings = Get-Settings
     if (-not $settings) { Pause-Menu; return }
     $logDir = $settings.LogsPath
-    $logFile = Join-Path $logDir "admingate_$(Get-Date -Format 'yyyyMMdd').log"
+    $logFile = Join-Path $logDir "wingatekeeper_$(Get-Date -Format 'yyyyMMdd').log"
+    if (-not (Test-Path $logFile)) {
+        $legacyLog = Join-Path $logDir "admingate_$(Get-Date -Format 'yyyyMMdd').log"
+        if (Test-Path $legacyLog) { $logFile = $legacyLog }
+    }
 
     if (-not (Test-Path $logFile)) {
         Write-Step "No log file found for today." -Type Warning
@@ -359,7 +363,7 @@ function Show-RecentFileAccessEvents {
             }
 
             $objectName = $data['ObjectName']
-            # Only show events related to AdminGate paths
+            # Only show events under configured BasePath
             if ($objectName -and $objectName -like "$($settings.BasePath)*") {
                 $time = $event.TimeCreated.ToString("yyyy-MM-dd HH:mm:ss")
                 $user = if ($data['SubjectUserName']) { $data['SubjectUserName'] } else { "UNKNOWN" }
@@ -402,7 +406,7 @@ function Show-AuditMenu {
         Write-MenuOption "3" "Enable PowerShell Logging"
         Write-Separator
         Write-MenuOption "4" "Show Audit & Logging Status"
-        Write-MenuOption "5" "View Recent AdminGate Logs"
+        Write-MenuOption "5" "View Recent WinGateKeeper Logs"
         Write-MenuOption "6" "View Recent Login Events"
         Write-MenuOption "7" "View Recent File Access Events"
         Write-Separator

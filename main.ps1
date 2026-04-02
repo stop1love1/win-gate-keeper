@@ -1,5 +1,5 @@
 # ============================================================================
-# AdminGate - Main CLI Entry Point
+# WinGateKeeper - Main CLI Entry Point
 # Windows Server Access Control & User Isolation
 # ============================================================================
 
@@ -85,6 +85,7 @@ function Show-MainMenu {
         Write-Separator
         Write-MenuOption "S" "System Status Overview"
         Write-MenuOption "C" "Edit Configuration"
+        Write-MenuOption "A" "About / Author"
         Write-Separator
         Write-MenuOption "Q" "Quit"
 
@@ -99,12 +100,52 @@ function Show-MainMenu {
             "5" { Show-AuditMenu; $script:_statusCache = $null }
             "S" { Show-SystemOverview }
             "C" { Edit-Configuration; $script:_statusCache = $null }
+            "A" { Show-AuthorInfo }
             "Q" {
                 Write-Host ""
                 Write-Step "Goodbye!" -Type Info
                 Write-Host ""
                 return
             }
+            default {
+                Write-Step "Invalid option. Please try again." -Type Warning
+                Start-Sleep -Seconds 1
+            }
+        }
+    }
+}
+
+function Show-AuthorInfo {
+    $repoUrl = "https://github.com/stop1love1/win-gate-keeper"
+
+    while ($true) {
+        Clear-Host
+        Write-Banner
+        Write-MenuHeader "About WinGateKeeper"
+
+        Write-Host ""
+        Write-Host "  Author:     stop1love1" -ForegroundColor Cyan
+        Write-Host "  Repository: $repoUrl" -ForegroundColor White
+        Write-Host ""
+
+        Write-MenuOption "1" "Open repository in default browser"
+        Write-Separator
+        Write-MenuOption "B" "Back to Main Menu"
+
+        $choice = Read-MenuChoice
+
+        switch ($choice) {
+            "1" {
+                try {
+                    Start-Process $repoUrl
+                    Write-Step "Link opened in your default browser." -Type Info
+                }
+                catch {
+                    Write-Step "Could not open browser: $_" -Type Error
+                }
+                Pause-Menu
+            }
+            "B" { return }
             default {
                 Write-Step "Invalid option. Please try again." -Type Warning
                 Start-Sleep -Seconds 1
@@ -185,7 +226,7 @@ function Edit-Configuration {
 if (-not (Test-IsAdmin)) {
     Write-Banner
     Write-Host ""
-    Write-Host "  ERROR: AdminGate requires Administrator privileges!" -ForegroundColor Red
+    Write-Host "  ERROR: WinGateKeeper requires Administrator privileges!" -ForegroundColor Red
     Write-Host "  Please right-click PowerShell and select 'Run as Administrator'." -ForegroundColor Yellow
     Write-Host ""
     exit 1

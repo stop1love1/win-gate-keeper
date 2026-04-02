@@ -1,5 +1,5 @@
 # ============================================================================
-# AdminGate - System Status Overview Module
+# WinGateKeeper - System Status Overview Module
 # ============================================================================
 
 Import-Module "$PSScriptRoot\Utils.psm1" -Force
@@ -9,7 +9,7 @@ Import-Module "$PSScriptRoot\SFTPConfig.psm1" -Force
 Import-Module "$PSScriptRoot\AuditLogging.psm1" -Force
 
 function Show-SystemOverview {
-    Write-MenuHeader "AdminGate System Overview"
+    Write-MenuHeader "WinGateKeeper System Overview"
 
     $settings = Get-Settings
     if (-not $settings) { Pause-Menu; return }
@@ -373,7 +373,7 @@ function Set-SFTPChrootConfigCore {
     if ($content -notmatch [regex]::Escape("Match Group $sftpGroup")) {
         $matchBlock = @"
 
-# BEGIN AdminGate SFTP Configuration
+# BEGIN WinGateKeeper SFTP Configuration
 Match Group $sftpGroup
     ForceCommand internal-sftp
     ChrootDirectory $($Settings.UsersRoot)
@@ -381,7 +381,7 @@ Match Group $sftpGroup
     AllowAgentForwarding no
     AllowTcpForwarding no
     X11Forwarding no
-# END AdminGate SFTP Configuration
+# END WinGateKeeper SFTP Configuration
 "@
         $content = $content.TrimEnd() + "`r`n" + $matchBlock + "`r`n"
 

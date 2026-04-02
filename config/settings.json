@@ -1,15 +1,15 @@
 {
-    "BasePath": "C:\\AdminGate",
-    "UsersRoot": "C:\\AdminGate\\Users",
-    "LogsPath": "C:\\AdminGate\\Logs",
+    "BasePath": "C:\\WinGateKeeper",
+    "UsersRoot": "C:\\WinGateKeeper\\Users",
+    "LogsPath": "C:\\WinGateKeeper\\Logs",
     "SSHConfigPath": "C:\\ProgramData\\ssh\\sshd_config",
     "SFTPOnlyGroup": "SFTPUsers",
-    "AdminGroup": "AdminGateAdmins",
+    "AdminGroup": "WinGateKeeperAdmins",
     "SSHPort": 22,
     "PowerShellLogging": {
         "ScriptBlockLogging": true,
         "ModuleLogging": true,
         "Transcription": true,
-        "TranscriptionPath": "C:\\AdminGate\\Logs\\Transcripts"
+        "TranscriptionPath": "C:\\WinGateKeeper\\Logs\\Transcripts"
     }
 }

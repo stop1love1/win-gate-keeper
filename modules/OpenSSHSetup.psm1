@@ -1,5 +1,5 @@
 # ============================================================================
-# AdminGate - OpenSSH Server Setup Module
+# WinGateKeeper - OpenSSH Server Setup Module
 # ============================================================================
 
 Import-Module "$PSScriptRoot\Utils.psm1" -Force

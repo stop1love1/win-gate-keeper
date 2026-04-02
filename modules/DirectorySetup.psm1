@@ -1,5 +1,5 @@
 # ============================================================================
-# AdminGate - Directory Structure & NTFS ACL Module
+# WinGateKeeper - Directory Structure & NTFS ACL Module
 # ============================================================================
 
 Import-Module "$PSScriptRoot\Utils.psm1" -Force
