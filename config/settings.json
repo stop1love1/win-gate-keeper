@@ -1,0 +1,15 @@
+{
+    "BasePath": "C:\\AdminGate",
+    "UsersRoot": "C:\\AdminGate\\Users",
+    "LogsPath": "C:\\AdminGate\\Logs",
+    "SSHConfigPath": "C:\\ProgramData\\ssh\\sshd_config",
+    "SFTPOnlyGroup": "SFTPUsers",
+    "AdminGroup": "AdminGateAdmins",
+    "SSHPort": 22,
+    "PowerShellLogging": {
+        "ScriptBlockLogging": true,
+        "ModuleLogging": true,
+        "Transcription": true,
+        "TranscriptionPath": "C:\\AdminGate\\Logs\\Transcripts"
+    }
+}
