@@ -252,7 +252,7 @@ function Update-FirewallIPRestriction {
 function Update-SettingsField {
     param(
         [string]$FieldPath,
-        [string]$Value
+        $Value  # Untyped — preserves int, bool, string as-is in JSON
     )
     $settingsPath = Join-Path $PSScriptRoot "..\config\settings.json"
     if (-not (Test-Path $settingsPath)) {
@@ -274,7 +274,7 @@ function Update-SettingsField {
     }
     $current.($parts[-1]) = $Value
 
-    $settings | ConvertTo-Json -Depth 5 | Set-Content $settingsPath -Encoding UTF8
+    [System.IO.File]::WriteAllText($settingsPath, ($settings | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))
 }
 
 function Show-ActiveSessions {
@@ -293,8 +293,19 @@ function Show-ActiveSessions {
         return
     }
 
-    # Identify the listener as the oldest sshd process; the rest are sessions
-    $listenerPid = ($sshdProcesses | Sort-Object StartTime | Select-Object -First 1).Id
+    # Identify the listener PID via the process listening on the SSH port
+    $settings = Get-Settings
+    $sshPort = if ($settings -and $settings.SSHPort) { $settings.SSHPort } else { 22 }
+    $listenerPid = $null
+    try {
+        $listener = Get-NetTCPConnection -LocalPort $sshPort -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($listener) { $listenerPid = $listener.OwningProcess }
+    }
+    catch {}
+    # Fallback: if we couldn't find via port, skip the oldest process
+    if (-not $listenerPid) {
+        $listenerPid = ($sshdProcesses | Sort-Object StartTime | Select-Object -First 1).Id
+    }
 
     Write-Host "  PID       Started              Memory" -ForegroundColor White
     Write-Host ("  " + "-" * 56) -ForegroundColor DarkGray
@@ -360,6 +371,16 @@ function Disconnect-SSHSession {
     $proc = Get-Process -Id $targetPid -ErrorAction SilentlyContinue
     if (-not $proc -or $proc.Name -ne "sshd") {
         Write-Step "PID $targetPid is not an sshd process." -Type Error
+        Pause-Menu
+        return
+    }
+
+    # Prevent killing the listener process
+    $settings = Get-Settings
+    $sshPort = if ($settings -and $settings.SSHPort) { $settings.SSHPort } else { 22 }
+    $listener = Get-NetTCPConnection -LocalPort $sshPort -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($listener -and $listener.OwningProcess -eq $targetPid) {
+        Write-Step "PID $targetPid is the SSH listener! Killing it would stop ALL SSH access." -Type Error
         Pause-Menu
         return
     }
@@ -486,8 +507,10 @@ function Invoke-ApplyHardening {
     }
 
     Move-Item -Path $tempConfig -Destination $sshdConfig -Force
-    Restart-Service sshd -Force
-    Write-Step "SSH hardening applied and sshd restarted." -Type Success
+    Write-Step "Restarting sshd service..." -Type Info
+    if (Restart-SSHDService) {
+        Write-Step "SSH hardening applied and sshd restarted." -Type Success
+    }
     Write-Log "SSH hardening applied."
 
     Pause-Menu

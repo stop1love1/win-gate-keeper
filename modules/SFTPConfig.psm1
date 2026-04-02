@@ -116,8 +116,9 @@ Match Group $sftpGroup
 
     # Restart sshd to apply
     Write-Step "Restarting sshd service..." -Type Info
-    Restart-Service sshd -Force
-    Write-Step "sshd service restarted." -Type Success
+    if (Restart-SSHDService) {
+        Write-Step "sshd service restarted." -Type Success
+    }
 
     Write-Log "SFTP chroot configuration applied. Group: $sftpGroup, ChrootDir: $chrootDir"
 

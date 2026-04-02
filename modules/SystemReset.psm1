@@ -91,15 +91,23 @@ function Clear-UserData {
 
     $cleared = 0
     foreach ($dir in $userDirs) {
-        try {
-            Get-ChildItem -Path $dir.FullName -Recurse -Force -ErrorAction SilentlyContinue |
-                Remove-Item -Recurse -Force -ErrorAction Stop
+        $skipped = 0
+        Get-ChildItem -Path $dir.FullName -Recurse -Force -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                try {
+                    Remove-Item $_.FullName -Recurse -Force -ErrorAction Stop
+                }
+                catch {
+                    $skipped++
+                }
+            }
+        if ($skipped -eq 0) {
             Write-Step "Cleared: $($dir.Name)" -Type Success
-            $cleared++
         }
-        catch {
-            Write-Step "Failed to clear '$($dir.Name)': $_" -Type Error
+        else {
+            Write-Step "Cleared: $($dir.Name) ($skipped files skipped - locked)" -Type Warning
         }
+        $cleared++
     }
 
     Write-Log "Cleared user data for $cleared directories."
@@ -294,7 +302,7 @@ function Invoke-FactoryReset {
             }
             $cleaned = ($cleanedLines -join "`r`n").TrimEnd() + "`r`n"
             [System.IO.File]::WriteAllText($sshdConfig, $cleaned, [System.Text.UTF8Encoding]::new($false))
-            Restart-Service sshd -Force -ErrorAction SilentlyContinue
+            Restart-SSHDService | Out-Null
             Write-Step "WinGateKeeper config block removed from sshd_config." -Type Success
         }
         catch {

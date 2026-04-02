@@ -82,16 +82,22 @@ function Read-MenuChoice {
     return (Read-Host).Trim().ToUpper()
 }
 
+function Test-InteractiveConsole {
+    <# Returns $true if we have a real console with RawUI support #>
+    try {
+        $null = $Host.UI.RawUI.KeyAvailable
+        $null = [Console]::CursorVisible
+        return $true
+    }
+    catch { return $false }
+}
+
 function Select-MenuOption {
     <#
     .SYNOPSIS
         Interactive arrow-key menu selector. Use Up/Down to navigate, Enter to select.
-        Also supports typing the shortcut key directly.
-    .PARAMETER Items
-        Array of hashtables: @{ Key="1"; Label="Option"; Status="OK" }
-        For separators: @{ Separator=$true }
-    .PARAMETER Title
-        Menu header title (optional, displayed above items)
+        Falls back to text-based Read-Host when no interactive console is available
+        (PSSession, Scheduled Task, ISE, etc.).
     #>
     param(
         [array]$Items,
@@ -99,25 +105,26 @@ function Select-MenuOption {
         [scriptblock]$BeforeRender = $null
     )
 
-    # Filter selectable items (non-separator)
     $selectableItems = @($Items | Where-Object { -not $_.Separator })
     if ($selectableItems.Count -eq 0) { return $null }
 
+    # Fallback: no interactive console → render static menu + Read-Host
+    if (-not (Test-InteractiveConsole)) {
+        return Select-MenuOptionFallback -Items $Items -Title $Title -BeforeRender $BeforeRender
+    }
+
     $selectedIndex = 0
-    $cursorVisible = [Console]::CursorVisible
-    [Console]::CursorVisible = $false
+    $savedCursor = $true
+    try { $savedCursor = [Console]::CursorVisible } catch {}
+    try { [Console]::CursorVisible = $false } catch {}
 
     try {
         while ($true) {
             Clear-Host
-
-            # Run custom render (e.g. banner, status)
             if ($BeforeRender) { & $BeforeRender }
-
             if ($Title) { Write-MenuHeader $Title }
             Write-Host ""
 
-            # Render all items
             $selectableIdx = 0
             foreach ($item in $Items) {
                 if ($item.Separator) {
@@ -131,35 +138,32 @@ function Select-MenuOption {
                 $status = $item.Status
 
                 if ($isSelected) {
-                    # Highlighted row
                     Write-Host "  > " -ForegroundColor White -NoNewline
                     Write-Host "[$key]" -ForegroundColor Black -BackgroundColor Yellow -NoNewline
                     Write-Host " $label" -ForegroundColor White -BackgroundColor DarkCyan -NoNewline
                     if ($status) {
+                        $statusText = switch ($status) {
+                            "OK"   { " [OK]" }
+                            "FAIL" { " [NOT CONFIGURED]" }
+                            default { " [$status]" }
+                        }
                         $statusColor = switch -Regex ($status) {
                             "^OK"       { "Green" }
                             "^FAIL"     { "Red" }
                             "^\d+ user" { "Cyan" }
                             default     { "DarkYellow" }
                         }
-                        $statusText = switch ($status) {
-                            "OK"   { " [OK]" }
-                            "FAIL" { " [NOT CONFIGURED]" }
-                            default { " [$status]" }
-                        }
                         Write-Host $statusText -ForegroundColor $statusColor -BackgroundColor DarkCyan -NoNewline
                     }
-                    # Pad rest of line with background
                     $lineLen = 4 + $key.Length + 2 + $label.Length + 1
                     if ($status) {
-                        $statusText = switch ($status) { "OK" { " [OK]" }; "FAIL" { " [NOT CONFIGURED]" }; default { " [$status]" } }
-                        $lineLen += $statusText.Length
+                        $st = switch ($status) { "OK" { " [OK]" }; "FAIL" { " [NOT CONFIGURED]" }; default { " [$status]" } }
+                        $lineLen += $st.Length
                     }
                     $pad = [Math]::Max(0, 56 - $lineLen + 4)
                     Write-Host (" " * $pad) -BackgroundColor DarkCyan
                 }
                 else {
-                    # Normal row
                     Write-Host "    " -NoNewline
                     Write-Host "[$key]" -ForegroundColor Yellow -NoNewline
                     Write-Host " $label" -NoNewline
@@ -173,9 +177,7 @@ function Select-MenuOption {
                             }
                         }
                     }
-                    else {
-                        Write-Host ""
-                    }
+                    else { Write-Host "" }
                 }
                 $selectableIdx++
             }
@@ -187,39 +189,47 @@ function Select-MenuOption {
             Write-Host "[Enter]" -ForegroundColor Cyan -NoNewline
             Write-Host " to select, or press a shortcut key" -ForegroundColor DarkGray
 
-            # Read key input
             $keyInfo = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 
             switch ($keyInfo.VirtualKeyCode) {
-                38 {
-                    # Up arrow
-                    $selectedIndex = if ($selectedIndex -gt 0) { $selectedIndex - 1 } else { $selectableItems.Count - 1 }
-                }
-                40 {
-                    # Down arrow
-                    $selectedIndex = if ($selectedIndex -lt ($selectableItems.Count - 1)) { $selectedIndex + 1 } else { 0 }
-                }
-                13 {
-                    # Enter
-                    return $selectableItems[$selectedIndex].Key
-                }
+                38 { $selectedIndex = if ($selectedIndex -gt 0) { $selectedIndex - 1 } else { $selectableItems.Count - 1 } }
+                40 { $selectedIndex = if ($selectedIndex -lt ($selectableItems.Count - 1)) { $selectedIndex + 1 } else { 0 } }
+                13 { return $selectableItems[$selectedIndex].Key }
                 default {
-                    # Check if typed character matches a shortcut key
                     $ch = $keyInfo.Character
                     if ($ch) {
                         $typed = $ch.ToString().ToUpper()
                         $match = $selectableItems | Where-Object { $_.Key -eq $typed }
-                        if ($match) {
-                            return $typed
-                        }
+                        if ($match) { return $typed }
                     }
                 }
             }
         }
     }
     finally {
-        [Console]::CursorVisible = $cursorVisible
+        try { [Console]::CursorVisible = $savedCursor } catch {}
     }
+}
+
+function Select-MenuOptionFallback {
+    <# Text-only fallback for non-interactive consoles (PSSession, ISE, Scheduled Task) #>
+    param(
+        [array]$Items,
+        [string]$Title = "",
+        [scriptblock]$BeforeRender = $null
+    )
+
+    Clear-Host
+    if ($BeforeRender) { & $BeforeRender }
+    if ($Title) { Write-MenuHeader $Title }
+    Write-Host ""
+
+    foreach ($item in $Items) {
+        if ($item.Separator) { Write-Separator; continue }
+        Write-MenuOption $item.Key $item.Label -Status $item.Status
+    }
+
+    return Read-MenuChoice
 }
 
 function Confirm-Action {
@@ -279,6 +289,33 @@ function Write-Log {
     }
     catch {
         Write-Warning "WinGateKeeper: Failed to write log: $_"
+    }
+}
+
+function Restart-SSHDService {
+    <# Safe sshd restart with timeout — avoids hanging on StopPending #>
+    param([int]$TimeoutSeconds = 15)
+    $svc = Get-Service sshd -ErrorAction SilentlyContinue
+    if (-not $svc) {
+        Write-Step "sshd service not found." -Type Warning
+        return $false
+    }
+    try {
+        if ($svc.Status -ne 'Stopped') {
+            $svc.Stop()
+            $svc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds($TimeoutSeconds))
+        }
+        $svc.Start()
+        $svc.WaitForStatus('Running', [TimeSpan]::FromSeconds($TimeoutSeconds))
+        return $true
+    }
+    catch [System.ServiceProcess.TimeoutException] {
+        Write-Step "sshd restart timed out after ${TimeoutSeconds}s. Check service status manually." -Type Error
+        return $false
+    }
+    catch {
+        Write-Step "sshd restart failed: $_" -Type Error
+        return $false
     }
 }
 
@@ -354,8 +391,8 @@ function Invoke-LogRotation {
 
 function Pause-Menu {
     Write-Host ""
-    Write-Host "  Press any key to continue..." -ForegroundColor DarkGray
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    Write-Host "  Press Enter to continue..." -ForegroundColor DarkGray -NoNewline
+    Read-Host | Out-Null
 }
 
 Export-ModuleMember -Function *

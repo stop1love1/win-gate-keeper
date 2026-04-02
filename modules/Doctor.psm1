@@ -297,7 +297,7 @@ function Invoke-Doctor {
     # 11. File Audit Policy
     # =========================================================================
     Write-Host "  File Audit Policy                " -NoNewline
-    $auditCheck = auditpol /get /subcategory:"File System" 2>$null
+    $auditCheck = auditpol /get /subcategory:"File System" 2>&1
     if ($auditCheck -and ($auditCheck -join " ") -match "Success") {
         Write-Host "OK" -ForegroundColor Green
         $passed++

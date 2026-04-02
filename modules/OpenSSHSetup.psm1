@@ -195,7 +195,12 @@ function Show-OpenSSHStatus {
     $service = Get-Service -Name sshd -ErrorAction SilentlyContinue
     if ($service) {
         Write-Host "  Startup Type         " -NoNewline
-        Write-Host "$($service.StartType)" -ForegroundColor White
+        $startType = $service.StartType
+        if (-not $startType) {
+            # PS 5.1 on some Server versions doesn't populate StartType
+            $startType = (Get-CimInstance Win32_Service -Filter "Name='sshd'" -ErrorAction SilentlyContinue).StartMode
+        }
+        Write-Host "$(if ($startType) { $startType } else { 'Unknown' })" -ForegroundColor White
     }
 
     # Check firewall

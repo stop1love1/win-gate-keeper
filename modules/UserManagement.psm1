@@ -3,6 +3,7 @@
 # ============================================================================
 
 Import-Module "$PSScriptRoot\Utils.psm1" -Force
+Import-Module "$PSScriptRoot\RDPManager.psm1" -Force
 
 function Compare-SecureString {
     <#
@@ -113,16 +114,20 @@ function New-GateUser {
 
     # User type selection
     Write-Host ""
-    Write-MenuOption "1" "Standard User (SFTP-only)"
-    Write-MenuOption "2" "Shell User (SSH + SFTP)"
+    Write-MenuOption "1" "SFTP-only (file transfer only)"
+    Write-MenuOption "2" "Shell (SSH terminal + SFTP)"
+    Write-MenuOption "3" "RDP (Remote Desktop - full GUI access)"
+    Write-MenuOption "4" "Shell + RDP (terminal + desktop)"
     $typeChoice = Read-MenuChoice "Select user type"
 
-    if ($typeChoice -notin @("1", "2")) {
+    if ($typeChoice -notin @("1", "2", "3", "4")) {
         Write-Step "Invalid user type selection." -Type Error
         Pause-Menu
         return
     }
     $isSFTPOnly = ($typeChoice -eq "1")
+    $isRDP = ($typeChoice -in @("3", "4"))
+    $isShell = ($typeChoice -in @("2", "4"))
 
     # Account expiry (optional)
     Write-Host ""
@@ -161,16 +166,7 @@ function New-GateUser {
         return
     }
 
-    # Password policy check
-    $policyErrors = Test-PasswordPolicy -SecurePassword $securePass -Username $username
-    if ($policyErrors.Count -gt 0) {
-        Write-Step "Password does not meet policy requirements:" -Type Error
-        foreach ($err in $policyErrors) {
-            Write-Host "    - $err" -ForegroundColor Red
-        }
-        Pause-Menu
-        return
-    }
+
 
     if (-not (Confirm-Action "Create user '$username'?")) {
         Write-Step "Operation cancelled." -Type Warning
@@ -199,9 +195,15 @@ function New-GateUser {
         New-LocalUser @params | Out-Null
         Write-Step "User '$username' created." -Type Success
 
+        # Wait briefly for Windows to register the new SID
+        Start-Sleep -Seconds 1
+
+        # Use full COMPUTERNAME\username for all group/ACL operations
+        $fullUsername = "$env:COMPUTERNAME\$username"
+
         # Add to Users group
         try {
-            Add-LocalGroupMember -Group "Users" -Member $username -ErrorAction Stop
+            Add-LocalGroupMember -Group "Users" -Member $fullUsername -ErrorAction Stop
             Write-Step "Added to 'Users' group." -Type Success
         }
         catch {
@@ -211,20 +213,35 @@ function New-GateUser {
         # SFTP-only group
         if ($isSFTPOnly) {
             $sftpGroup = $settings.SFTPOnlyGroup
-            # Create group if it doesn't exist
             $group = Get-LocalGroup -Name $sftpGroup -ErrorAction SilentlyContinue
             if (-not $group) {
                 New-LocalGroup -Name $sftpGroup -Description "SFTP-only access users"
                 Write-Step "Created group '$sftpGroup'." -Type Info
             }
             try {
-                Add-LocalGroupMember -Group $sftpGroup -Member $username -ErrorAction Stop
+                Add-LocalGroupMember -Group $sftpGroup -Member $fullUsername -ErrorAction Stop
                 Write-Step "Added to '$sftpGroup' group (SFTP-only)." -Type Success
             }
             catch {
                 Write-Step "Failed to add to SFTP group. Rolling back user creation..." -Type Error
                 Remove-LocalUser -Name $username -ErrorAction SilentlyContinue
                 throw "SFTP group assignment failed: $_"
+            }
+        }
+
+        # RDP access
+        if ($isRDP) {
+            try {
+                Add-LocalGroupMember -Group "Remote Desktop Users" -Member $fullUsername -ErrorAction Stop
+                Write-Step "Added to 'Remote Desktop Users' group." -Type Success
+            }
+            catch {
+                if ("$_" -match "already a member") {
+                    Write-Step "Already in 'Remote Desktop Users' group." -Type Info
+                }
+                else {
+                    Write-Step "Warning: Failed to add to RDP group: $_" -Type Warning
+                }
             }
         }
 
@@ -238,9 +255,13 @@ function New-GateUser {
         # Set NTFS permissions
         Set-UserDirectoryPermissions -Username $username -Path $userDir
 
-        Write-Log "User '$username' created. Type: $(if ($isSFTPOnly) {'SFTP-only'} else {'Shell'})"
+        $typeLabel = switch ($typeChoice) { "1" { "SFTP-only" }; "2" { "Shell" }; "3" { "RDP" }; "4" { "Shell+RDP" } }
+        Write-Log "User '$username' created. Type: $typeLabel"
         Write-Host ""
         Write-Step "User '$username' provisioned successfully!" -Type Success
+
+        # Show connection guide
+        Show-ConnectionGuide -Username $username -UserType $typeLabel
     }
     catch {
         Write-Step "Failed to create user: $_" -Type Error
@@ -248,6 +269,73 @@ function New-GateUser {
     }
 
     Pause-Menu
+}
+
+function Show-ConnectionGuide {
+    param(
+        [string]$Username,
+        [string]$UserType = "Shell"
+    )
+
+    $settings = Get-Settings
+    $sshPort = if ($settings -and $settings.SSHPort) { $settings.SSHPort } else { 22 }
+
+    $ips = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object { $_.IPAddress -ne "127.0.0.1" -and $_.PrefixOrigin -ne "WellKnown" } |
+        Select-Object -ExpandProperty IPAddress)
+    $serverIP = if ($ips.Count -gt 0) { $ips[0] } else { $env:COMPUTERNAME }
+    $portParam = if ($sshPort -ne 22) { " -P $sshPort" } else { "" }
+    $portFlag = if ($sshPort -ne 22) { " -p $sshPort" } else { "" }
+
+    Write-Host ""
+    Write-Host ("  " + "=" * 56) -ForegroundColor DarkCyan
+    Write-Host "  CONNECTION GUIDE - Send this info to the user" -ForegroundColor White
+    Write-Host ("  " + "=" * 56) -ForegroundColor DarkCyan
+    Write-Host ""
+    Write-Host "  Server:    $serverIP" -ForegroundColor Cyan
+    Write-Host "  Username:  $Username" -ForegroundColor Cyan
+    Write-Host "  Password:  (the password you just set)" -ForegroundColor Cyan
+    Write-Host "  Type:      $UserType" -ForegroundColor Yellow
+    Write-Host ""
+
+    # SFTP guide
+    if ($UserType -in @("SFTP-only", "Shell", "Shell+RDP")) {
+        Write-Host "  --- SFTP (file transfer) ---" -ForegroundColor White
+        Write-Host "  WinSCP / FileZilla:" -ForegroundColor Green
+        Write-Host "    Protocol:  SFTP" -ForegroundColor White
+        Write-Host "    Host:      $serverIP" -ForegroundColor White
+        Write-Host "    Port:      $sshPort" -ForegroundColor White
+        Write-Host "    Username:  $Username" -ForegroundColor White
+        Write-Host "  Command line:" -ForegroundColor Green
+        Write-Host "    sftp$portParam $Username@$serverIP" -ForegroundColor White
+        Write-Host ""
+    }
+
+    # SSH guide
+    if ($UserType -in @("Shell", "Shell+RDP")) {
+        Write-Host "  --- SSH (remote terminal) ---" -ForegroundColor White
+        Write-Host "  Terminal / PowerShell:" -ForegroundColor Green
+        Write-Host "    ssh$portFlag $Username@$serverIP" -ForegroundColor White
+        Write-Host "  PuTTY:" -ForegroundColor Green
+        Write-Host "    Host: $serverIP  Port: $sshPort  Username: $Username" -ForegroundColor White
+        Write-Host ""
+    }
+
+    # RDP guide
+    if ($UserType -in @("RDP", "Shell+RDP")) {
+        Write-Host "  --- RDP (Remote Desktop - full GUI) ---" -ForegroundColor White
+        Write-Host "  Windows:" -ForegroundColor Green
+        Write-Host "    mstsc /v:$serverIP" -ForegroundColor White
+        Write-Host "    Or: Start Menu > Remote Desktop Connection" -ForegroundColor DarkGray
+        Write-Host "    Computer:  $serverIP" -ForegroundColor White
+        Write-Host "    Username:  $Username" -ForegroundColor White
+        Write-Host "  Mac:" -ForegroundColor Green
+        Write-Host "    Download 'Microsoft Remote Desktop' from App Store" -ForegroundColor White
+        Write-Host "    PC name:   $serverIP" -ForegroundColor White
+        Write-Host ""
+    }
+
+    Write-Host ("  " + "=" * 56) -ForegroundColor DarkCyan
 }
 
 function Set-UserDirectoryPermissions {
@@ -258,16 +346,19 @@ function Set-UserDirectoryPermissions {
 
     Write-Step "Setting NTFS permissions for '$Username' on $Path..." -Type Info
 
+    # Use full COMPUTERNAME\username for ACL identity
+    $identity = if ($Username -match '\\') { $Username } else { "$env:COMPUTERNAME\$Username" }
+
     try {
         $acl = New-AdminSystemAcl -Path $Path
 
         # User modify (read, write, execute, delete - but not change permissions)
         $userRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-            $Username, "Modify", "ContainerInherit,ObjectInherit", "None", "Allow"
+            $identity, "Modify", "ContainerInherit,ObjectInherit", "None", "Allow"
         )
         $acl.AddAccessRule($userRule)
 
-        Set-Acl -Path $Path -AclObject $acl
+        Set-Acl -Path $Path -AclObject $acl -ErrorAction Stop
         Write-Step "NTFS permissions applied." -Type Success
     }
     catch {
@@ -362,18 +453,28 @@ function Show-UserList {
         return
     }
 
-    # Pre-fetch group members once (not per-user)
-    $sftpMembers = @()
+    # Pre-fetch group members once for fast lookup
+    $sftpMemberNames = @{}
+    $rdpMemberNames = @{}
     try {
-        $sftpMembers = @(Get-LocalGroupMember -Group $sftpGroup -ErrorAction SilentlyContinue)
-    }
-    catch {}
+        $members = @(Get-LocalGroupMember -Group $sftpGroup -ErrorAction SilentlyContinue)
+        foreach ($m in $members) { $sftpMemberNames[($m.Name -split '\\')[-1]] = $true }
+    } catch {}
+    try {
+        $members = @(Get-LocalGroupMember -Group "Remote Desktop Users" -ErrorAction SilentlyContinue)
+        foreach ($m in $members) { $rdpMemberNames[($m.Name -split '\\')[-1]] = $true }
+    } catch {}
 
     foreach ($user in $users) {
-        $isSFTP = $sftpMembers | Where-Object { $_.Name -eq "$($env:COMPUTERNAME)\$($user.Name)" }
-        $isSFTP = [bool]$isSFTP
+        $isSFTP = $sftpMemberNames.ContainsKey($user.Name)
+        $isRDP = $rdpMemberNames.ContainsKey($user.Name)
 
-        $type = if ($isSFTP) { "SFTP-only" } else { "Shell" }
+        $type = if ($isSFTP) { "SFTP-only" }
+                elseif ($isRDP -and -not $isSFTP) { "Shell+RDP" }
+                else { "Shell" }
+        # Check if RDP-only (in RDP group but also in SFTP group is impossible, so just check)
+        if ($isRDP -and $isSFTP) { $type = "SFTP+RDP" }
+
         $status = if ($user.Enabled) { "Enabled" } else { "Disabled" }
         $statusColor = if ($user.Enabled) { "Green" } else { "Red" }
 
@@ -449,17 +550,25 @@ function Show-UserDetail {
     $sftpGroup = $settings.SFTPOnlyGroup
     $isSFTP = $false
     $groups = @()
+    Write-Host "  Loading groups..." -ForegroundColor DarkGray -NoNewline
     try {
-        $allGroups = Get-LocalGroup -ErrorAction SilentlyContinue
-        foreach ($grp in $allGroups) {
-            $members = Get-LocalGroupMember -Group $grp.Name -ErrorAction SilentlyContinue
-            if ($members.Name -like "*\$username") {
-                $groups += $grp.Name
-                if ($grp.Name -eq $sftpGroup) { $isSFTP = $true }
+        # Use net localgroup to get user's groups (faster than iterating all groups)
+        $netOutput = net localgroup 2>&1
+        $allGroupNames = @($netOutput | Where-Object { $_ -match '^\*' } | ForEach-Object { $_.TrimStart('*') })
+        foreach ($grpName in $allGroupNames) {
+            try {
+                $members = @(Get-LocalGroupMember -Group $grpName -ErrorAction SilentlyContinue)
+                $inGroup = $members | Where-Object { ($_.Name -split '\\')[-1] -eq $username }
+                if ($inGroup) {
+                    $groups += $grpName
+                    if ($grpName -eq $sftpGroup) { $isSFTP = $true }
+                }
             }
+            catch {}
         }
     }
     catch {}
+    Write-Host "`r                        `r" -NoNewline  # clear "Loading..." line
 
     Write-Host "  User Type:         " -NoNewline
     if ($isSFTP) { Write-Host "SFTP-only (restricted)" -ForegroundColor Yellow }
@@ -720,16 +829,7 @@ function Reset-UserPassword {
         return
     }
 
-    # Password policy check
-    $policyErrors = Test-PasswordPolicy -SecurePassword $newPass -Username $username
-    if ($policyErrors.Count -gt 0) {
-        Write-Step "Password does not meet policy requirements:" -Type Error
-        foreach ($err in $policyErrors) {
-            Write-Host "    - $err" -ForegroundColor Red
-        }
-        Pause-Menu
-        return
-    }
+
 
     try {
         Set-LocalUser -Name $username -Password $newPass
@@ -743,6 +843,327 @@ function Reset-UserPassword {
     Pause-Menu
 }
 
+function Show-FolderAccessMenu {
+    Write-MenuHeader "Manage Folder Access"
+
+    if (-not (Test-IsAdmin)) {
+        Write-RequiresAdmin
+        Pause-Menu
+        return
+    }
+
+    Show-UserList
+
+    Write-Host ""
+    Write-Host "  Enter username: " -ForegroundColor White -NoNewline
+    $username = (Read-Host).Trim()
+
+    $user = Get-LocalUser -Name $username -ErrorAction SilentlyContinue
+    if (-not $user) {
+        Write-Step "User '$username' not found." -Type Error
+        Pause-Menu
+        return
+    }
+
+    while ($true) {
+        Clear-Host
+        Write-MenuHeader "Folder Access: $username"
+
+        # Show current folder permissions for this user
+        Write-Host ""
+        Write-Host "  Current folder access:" -ForegroundColor White
+        Write-Host ("  " + "-" * 56) -ForegroundColor DarkGray
+
+        $settings = Get-Settings
+        $userDir = Join-Path $settings.UsersRoot $username
+        Write-Host "  $userDir" -ForegroundColor Cyan -NoNewline
+        Write-Host " (home - Modify)" -ForegroundColor DarkGray
+
+        # Scan for additional ACL entries for this user on common locations
+        $extraFolders = Get-UserFolderAccess -Username $username
+        if ($extraFolders.Count -gt 0) {
+            foreach ($entry in $extraFolders) {
+                $rightsStr = Format-AccessRights $entry.Rights
+                Write-Host "  $($entry.Path)" -ForegroundColor Cyan -NoNewline
+                Write-Host " ($rightsStr)" -ForegroundColor DarkGray
+            }
+        }
+        else {
+            Write-Host "  (no additional folders)" -ForegroundColor DarkGray
+        }
+
+        Write-Host ""
+        Write-MenuOption "1" "Grant access to a folder"
+        Write-MenuOption "2" "Revoke access to a folder"
+        Write-MenuOption "3" "View detailed permissions"
+        Write-Separator
+        Write-MenuOption "B" "Back"
+
+        $choice = Read-MenuChoice
+
+        switch ($choice) {
+            "1" { Grant-FolderAccess -Username $username }
+            "2" { Revoke-FolderAccess -Username $username }
+            "3" { Show-DetailedFolderAccess -Username $username }
+            "B" { return }
+        }
+    }
+}
+
+function Grant-FolderAccess {
+    param([string]$Username)
+
+    Write-Host ""
+    Write-Host "  Enter folder path to grant access: " -ForegroundColor White -NoNewline
+    $folderPath = (Read-Host).Trim()
+
+    if (-not $folderPath) { return }
+
+    if (-not (Test-Path $folderPath -PathType Container)) {
+        Write-Host ""
+        if (Confirm-Action "Folder does not exist. Create it?") {
+            try {
+                New-Item -ItemType Directory -Path $folderPath -Force | Out-Null
+                Write-Step "Created: $folderPath" -Type Success
+            }
+            catch {
+                Write-Step "Failed to create folder: $_" -Type Error
+                Pause-Menu
+                return
+            }
+        }
+        else { return }
+    }
+
+    Write-Host ""
+    Write-Host "  Select permission level:" -ForegroundColor White
+    Write-MenuOption "1" "Read Only (view files, cannot modify)"
+    Write-MenuOption "2" "Read + Write (view and create files)"
+    Write-MenuOption "3" "Modify (read, write, delete)"
+    Write-MenuOption "4" "Full Control (everything including change permissions)"
+    $permChoice = Read-MenuChoice "Permission level"
+
+    $rights = switch ($permChoice) {
+        "1" { "ReadAndExecute" }
+        "2" { "Read, Write" }
+        "3" { "Modify" }
+        "4" { "FullControl" }
+        default { $null }
+    }
+
+    if (-not $rights) {
+        Write-Step "Invalid selection." -Type Error
+        Pause-Menu
+        return
+    }
+
+    $rightsLabel = switch ($permChoice) {
+        "1" { "Read Only" }
+        "2" { "Read + Write" }
+        "3" { "Modify" }
+        "4" { "Full Control" }
+    }
+
+    if (-not (Confirm-Action "Grant '$rightsLabel' on '$folderPath' to '$Username'?")) {
+        Write-Step "Cancelled." -Type Warning
+        Pause-Menu
+        return
+    }
+
+    try {
+        $identity = if ($Username -match '\\') { $Username } else { "$env:COMPUTERNAME\$Username" }
+        $acl = Get-Acl $folderPath
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            $identity, $rights, "ContainerInherit,ObjectInherit", "None", "Allow"
+        )
+        $acl.AddAccessRule($rule)
+        Set-Acl -Path $folderPath -AclObject $acl -ErrorAction Stop
+
+        Write-Step "Granted '$rightsLabel' to '$Username' on:" -Type Success
+        Write-Step "  $folderPath" -Type Info
+        Write-Log "Granted $rightsLabel to '$Username' on '$folderPath'."
+    }
+    catch {
+        Write-Step "Failed to set permissions: $_" -Type Error
+    }
+
+    Pause-Menu
+}
+
+function Revoke-FolderAccess {
+    param([string]$Username)
+
+    $folders = Get-UserFolderAccess -Username $Username
+    if ($folders.Count -eq 0) {
+        Write-Step "No additional folder access found for '$Username'." -Type Info
+        Pause-Menu
+        return
+    }
+
+    Write-Host ""
+    Write-Host "  Select folder to revoke access:" -ForegroundColor White
+    $idx = 1
+    foreach ($entry in $folders) {
+        $rightsStr = Format-AccessRights $entry.Rights
+        Write-Host "  [$idx] $($entry.Path) ($rightsStr)" -ForegroundColor Yellow
+        $idx++
+    }
+
+    Write-Host ""
+    Write-Host "  Enter number (0 to cancel): " -ForegroundColor White -NoNewline
+    $pick = (Read-Host).Trim()
+    $pickNum = 0
+    if (-not [int]::TryParse($pick, [ref]$pickNum) -or $pickNum -lt 1 -or $pickNum -gt $folders.Count) {
+        return
+    }
+
+    $target = $folders[$pickNum - 1]
+
+    if (-not (Confirm-Action "Revoke '$Username' access to '$($target.Path)'?")) {
+        return
+    }
+
+    try {
+        $acl = Get-Acl $target.Path
+        $rulesToRemove = $acl.Access | Where-Object {
+            $_.IdentityReference.Value -match "\\$Username$" -and
+            $_.AccessControlType -eq "Allow"
+        }
+        foreach ($rule in $rulesToRemove) {
+            $acl.RemoveAccessRule($rule) | Out-Null
+        }
+        Set-Acl -Path $target.Path -AclObject $acl -ErrorAction Stop
+
+        Write-Step "Revoked '$Username' access to '$($target.Path)'." -Type Success
+        Write-Log "Revoked '$Username' access to '$($target.Path)'."
+    }
+    catch {
+        Write-Step "Failed to revoke permissions: $_" -Type Error
+    }
+
+    Pause-Menu
+}
+
+function Get-UserFolderAccess {
+    <# Finds folders where this user has explicit ACL entries (outside home dir) #>
+    param([string]$Username)
+
+    $settings = Get-Settings
+    $userDir = Join-Path $settings.UsersRoot $Username
+    $results = @()
+
+    # Check common locations and drives for explicit ACEs for this user
+    $searchRoots = @()
+    # Add all drive roots
+    Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue |
+        ForEach-Object { $searchRoots += $_.DeviceID + "\" }
+
+    foreach ($root in $searchRoots) {
+        $dirs = Get-ChildItem -Path $root -Directory -Depth 1 -ErrorAction SilentlyContinue
+        foreach ($dir in $dirs) {
+            # Skip home directory and system directories
+            if ($dir.FullName -eq $userDir) { continue }
+            if ($dir.FullName -match '^\w:\\(Windows|Program Files|ProgramData|\$)') { continue }
+
+            try {
+                $acl = Get-Acl $dir.FullName -ErrorAction SilentlyContinue
+                $userRules = $acl.Access | Where-Object {
+                    $_.IdentityReference.Value -match "\\$Username$" -and
+                    $_.AccessControlType -eq "Allow" -and
+                    -not $_.IsInherited
+                }
+                foreach ($rule in $userRules) {
+                    $results += @{
+                        Path   = $dir.FullName
+                        Rights = $rule.FileSystemRights
+                    }
+                }
+            }
+            catch {}
+        }
+    }
+
+    return $results
+}
+
+function Format-AccessRights {
+    param($Rights)
+    $r = $Rights.ToString()
+    if ($r -match "FullControl") { return "Full Control" }
+    if ($r -match "Modify") { return "Modify" }
+    if ($r -match "Write" -and $r -match "Read") { return "Read + Write" }
+    if ($r -match "ReadAndExecute" -or $r -match "Read") { return "Read Only" }
+    return $r
+}
+
+function Show-DetailedFolderAccess {
+    param([string]$Username)
+
+    Write-MenuHeader "Detailed Permissions: $Username"
+
+    Write-Host ""
+    Write-Host "  Scanning folders for '$Username'..." -ForegroundColor DarkGray
+
+    $settings = Get-Settings
+    $userDir = Join-Path $settings.UsersRoot $Username
+
+    # Home directory
+    Write-Host ""
+    Write-Host "  Home Directory: $userDir" -ForegroundColor White
+    Write-Host ("  " + "-" * 56) -ForegroundColor DarkGray
+    if (Test-Path $userDir) {
+        try {
+            $acl = Get-Acl $userDir
+            foreach ($rule in $acl.Access) {
+                $identity = $rule.IdentityReference.Value
+                $rights = Format-AccessRights $rule.FileSystemRights
+                $inherited = if ($rule.IsInherited) { " (inherited)" } else { "" }
+                $color = if ($identity -match "\\$Username$") { "Green" } else { "DarkGray" }
+                Write-Host "  $($rule.AccessControlType.ToString().PadRight(6)) $($identity.PadRight(30)) $rights$inherited" -ForegroundColor $color
+            }
+        }
+        catch { Write-Host "  (cannot read ACL)" -ForegroundColor Red }
+    }
+    else {
+        Write-Host "  (directory not found)" -ForegroundColor Red
+    }
+
+    # Additional folders
+    $extras = Get-UserFolderAccess -Username $Username
+    if ($extras.Count -gt 0) {
+        Write-Host ""
+        Write-Host "  Additional Folders:" -ForegroundColor White
+        Write-Host ("  " + "-" * 56) -ForegroundColor DarkGray
+        foreach ($entry in $extras) {
+            $rightsStr = Format-AccessRights $entry.Rights
+            Write-Host "  $($entry.Path)" -ForegroundColor Cyan
+            Write-Host "    Allow  $Username  $rightsStr" -ForegroundColor Green
+        }
+    }
+
+    # Group memberships that affect access
+    Write-Host ""
+    Write-Host "  Group Memberships (affect access):" -ForegroundColor White
+    Write-Host ("  " + "-" * 56) -ForegroundColor DarkGray
+    try {
+        $groups = net localgroup 2>&1 | Where-Object { $_ -match '^\*' } | ForEach-Object { $_.TrimStart('*') }
+        foreach ($grpName in $groups) {
+            try {
+                $members = @(Get-LocalGroupMember -Group $grpName -ErrorAction SilentlyContinue)
+                $inGroup = $members | Where-Object { ($_.Name -split '\\')[-1] -eq $Username }
+                if ($inGroup) {
+                    Write-Host "  - $grpName" -ForegroundColor Cyan
+                }
+            }
+            catch {}
+        }
+    }
+    catch {}
+
+    Write-Host ""
+    Pause-Menu
+}
+
 function Show-UserManagementMenu {
     while ($true) {
         $choice = Select-MenuOption -Title "User Management" -Items @(
@@ -751,7 +1172,8 @@ function Show-UserManagementMenu {
             @{ Key = "3"; Label = "View User Detail" }
             @{ Key = "4"; Label = "Enable/Disable User" }
             @{ Key = "5"; Label = "Reset User Password" }
-            @{ Key = "6"; Label = "Remove User" }
+            @{ Key = "6"; Label = "Manage Folder Access" }
+            @{ Key = "7"; Label = "Remove User" }
             @{ Separator = $true }
             @{ Key = "B"; Label = "Back to Main Menu" }
         )
@@ -765,7 +1187,8 @@ function Show-UserManagementMenu {
             "3" { Show-UserDetail }
             "4" { Enable-DisableUser }
             "5" { Reset-UserPassword }
-            "6" { Remove-GateUser }
+            "6" { Show-FolderAccessMenu }
+            "7" { Remove-GateUser }
             "B" { return }
         }
     }

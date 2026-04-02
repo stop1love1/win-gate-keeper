@@ -99,7 +99,7 @@ function Show-SystemOverview {
 
     # 5. Audit policies
     Write-Host "  File Audit Policy                " -NoNewline
-    $auditCheck = auditpol /get /subcategory:"File System" 2>$null
+    $auditCheck = auditpol /get /subcategory:"File System" 2>&1
     if ($auditCheck -and ($auditCheck -join " ") -match "Success") {
         Write-Host "OK" -ForegroundColor Green
     }
@@ -141,7 +141,7 @@ function Show-SystemOverview {
     if ($sessionCount -gt 0) {
         Write-Host "  Active connections: $sessionCount" -ForegroundColor Yellow
         # Show logged-in users via query (not available on Server Core)
-        $quser = if (Get-Command quser -ErrorAction SilentlyContinue) { quser 2>$null } else { $null }
+        $quser = if (Get-Command quser -ErrorAction SilentlyContinue) { quser 2>&1 | Where-Object { $_ -is [string] } } else { $null }
         if ($quser) {
             foreach ($line in ($quser | Select-Object -Skip 1)) {
                 $trimmed = $line.Trim()
@@ -250,7 +250,7 @@ function Start-QuickSetup {
                 }
             }
 
-            Restart-Service sshd -Force -ErrorAction SilentlyContinue
+            Restart-SSHDService | Out-Null
             Write-Step "SSH hardening applied." -Type Success
         }
         else {
@@ -299,6 +299,24 @@ function Start-QuickSetup {
     Write-Host ""
     Write-Host ("  " + "=" * 50) -ForegroundColor DarkCyan
     Write-Step "Quick Setup complete! All components configured." -Type Success
+
+    # Show server connection info
+    $port = if ($settings.SSHPort) { $settings.SSHPort } else { 22 }
+    $ips = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object { $_.IPAddress -ne "127.0.0.1" -and $_.PrefixOrigin -ne "WellKnown" } |
+        Select-Object -ExpandProperty IPAddress)
+
+    Write-Host ""
+    Write-Host "  SSH Server is ready!" -ForegroundColor Green
+    Write-Host ("  " + "-" * 50) -ForegroundColor DarkGray
+    Write-Host "  Hostname:  $($env:COMPUTERNAME)" -ForegroundColor Cyan
+    if ($ips.Count -gt 0) {
+        Write-Host "  IP:        $($ips -join ', ')" -ForegroundColor Cyan
+    }
+    Write-Host "  SSH Port:  $port" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Step "Next step: Go to [2] User Management to create users." -Type Info
+
     Write-Host ""
     Pause-Menu
 }
@@ -426,7 +444,7 @@ Match Group $sftpGroup
             }
         }
         Move-Item -Path $tempConfig -Destination $sshdConfig -Force
-        Restart-Service sshd -Force
+        Restart-SSHDService | Out-Null
     }
     else {
         Write-Step "SFTP chroot already configured." -Type Info
@@ -434,11 +452,12 @@ Match Group $sftpGroup
 }
 
 function Enable-FileAuditCore {
-    auditpol /set /subcategory:"File System" /success:enable /failure:enable | Out-Null
-    auditpol /set /subcategory:"Logon" /success:enable /failure:enable | Out-Null
-    auditpol /set /subcategory:"Logoff" /success:enable | Out-Null
-    auditpol /set /subcategory:"Handle Manipulation" /success:enable | Out-Null
-    auditpol /set /subcategory:"File Share" /success:enable /failure:enable | Out-Null
+    # Use GUIDs for non-English OS compatibility
+    auditpol /set /subcategory:"{0CCE921D-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable | Out-Null  # File System
+    auditpol /set /subcategory:"{0CCE9215-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable | Out-Null  # Logon
+    auditpol /set /subcategory:"{0CCE9216-69AE-11D9-BED3-505054503030}" /success:enable | Out-Null                  # Logoff
+    auditpol /set /subcategory:"{0CCE9223-69AE-11D9-BED3-505054503030}" /success:enable | Out-Null                  # Handle Manipulation
+    auditpol /set /subcategory:"{0CCE9224-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable | Out-Null  # File Share
 }
 
 function Enable-PowerShellLoggingCore {

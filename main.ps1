@@ -5,7 +5,7 @@
 
 #Requires -Version 5.1
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 
 # Import all modules
 $modulePath = Join-Path $PSScriptRoot "modules"
@@ -19,6 +19,7 @@ Import-Module "$modulePath\StatusOverview.psm1" -Force
 Import-Module "$modulePath\Doctor.psm1" -Force
 Import-Module "$modulePath\SystemReset.psm1" -Force
 Import-Module "$modulePath\SSHHardening.psm1" -Force
+Import-Module "$modulePath\RDPManager.psm1" -Force
 
 $script:_statusCache = $null
 $script:_statusCacheTime = [datetime]::MinValue
@@ -63,6 +64,10 @@ function Get-QuickStatus {
     $sbLog = Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging" -ErrorAction SilentlyContinue
     $status.Audit = if ($sbLog -and $sbLog.EnableScriptBlockLogging -eq 1) { "OK" } else { "FAIL" }
 
+    # RDP
+    $rdpReg = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -ErrorAction SilentlyContinue
+    $status.RDP = if ($rdpReg -and $rdpReg.fDenyTSConnections -eq 0) { "OK" } else { "FAIL" }
+
     $script:_statusCache = $status
     $script:_statusCacheTime = [datetime]::Now
     return $status
@@ -74,17 +79,20 @@ function Show-MainMenu {
         $choice = Select-MenuOption -Title "Main Menu" -BeforeRender { Write-Banner } -Items @(
             @{ Key = "0"; Label = "Quick Setup (All Steps)" }
             @{ Separator = $true }
-            @{ Key = "1"; Label = "OpenSSH Server Management"; Status = $st.SSH }
-            @{ Key = "2"; Label = "User Management"; Status = $st.Users }
-            @{ Key = "3"; Label = "Directory & Permissions"; Status = $st.Dirs }
-            @{ Key = "4"; Label = "SFTP Configuration"; Status = $st.SFTP }
-            @{ Key = "5"; Label = "Audit & Logging"; Status = $st.Audit }
-            @{ Key = "6"; Label = "SSH Security & Sessions" }
+            @{ Key = "1"; Label = "User Management"; Status = $st.Users }
+            @{ Key = "2"; Label = "Directory & Permissions"; Status = $st.Dirs }
             @{ Separator = $true }
+            @{ Key = "3"; Label = "OpenSSH Server"; Status = $st.SSH }
+            @{ Key = "4"; Label = "SFTP Configuration"; Status = $st.SFTP }
+            @{ Key = "5"; Label = "SSH Security & Sessions" }
+            @{ Key = "6"; Label = "Remote Desktop (RDP)"; Status = $st.RDP }
+            @{ Separator = $true }
+            @{ Key = "7"; Label = "Audit & Logging"; Status = $st.Audit }
             @{ Key = "S"; Label = "System Status Overview" }
             @{ Key = "D"; Label = "Doctor (Health Check & Auto-Fix)" }
-            @{ Key = "R"; Label = "System Reset / Clear Data" }
+            @{ Separator = $true }
             @{ Key = "C"; Label = "Edit Configuration" }
+            @{ Key = "R"; Label = "System Reset / Clear Data" }
             @{ Key = "A"; Label = "About / Author" }
             @{ Separator = $true }
             @{ Key = "Q"; Label = "Quit" }
@@ -92,16 +100,17 @@ function Show-MainMenu {
 
         switch ($choice) {
             "0" { Start-QuickSetup; $script:_statusCache = $null }
-            "1" { Show-OpenSSHMenu; $script:_statusCache = $null }
-            "2" { Show-UserManagementMenu; $script:_statusCache = $null }
-            "3" { Show-DirectoryMenu; $script:_statusCache = $null }
+            "1" { Show-UserManagementMenu; $script:_statusCache = $null }
+            "2" { Show-DirectoryMenu; $script:_statusCache = $null }
+            "3" { Show-OpenSSHMenu; $script:_statusCache = $null }
             "4" { Show-SFTPMenu; $script:_statusCache = $null }
-            "5" { Show-AuditMenu; $script:_statusCache = $null }
-            "6" { Show-SSHSecurityMenu; $script:_statusCache = $null }
+            "5" { Show-SSHSecurityMenu; $script:_statusCache = $null }
+            "6" { Show-RDPMenu; $script:_statusCache = $null }
+            "7" { Show-AuditMenu; $script:_statusCache = $null }
             "S" { Show-SystemOverview }
             "D" { Show-DoctorMenu; $script:_statusCache = $null }
-            "R" { Show-ResetMenu; $script:_statusCache = $null }
             "C" { Edit-Configuration; $script:_statusCache = $null }
+            "R" { Show-ResetMenu; $script:_statusCache = $null }
             "A" { Show-AuthorInfo }
             "Q" {
                 Write-Host ""
@@ -193,7 +202,7 @@ function Edit-Configuration {
                     $settings.BasePath = $newPath
                     $settings.UsersRoot = Join-Path $newPath "Users"
                     $settings.LogsPath = Join-Path $newPath "Logs"
-                    $settings | ConvertTo-Json -Depth 5 | Set-Content $settingsPath -Encoding UTF8
+                    [System.IO.File]::WriteAllText($settingsPath, ($settings | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))
                     Reset-LogCache
                     Write-Step "Configuration updated." -Type Success
                     Write-Log "Base path changed to: $newPath"
@@ -206,7 +215,7 @@ function Edit-Configuration {
             $newGroup = (Read-Host).Trim()
             if ($newGroup) {
                 $settings.SFTPOnlyGroup = $newGroup
-                $settings | ConvertTo-Json -Depth 5 | Set-Content $settingsPath -Encoding UTF8
+                [System.IO.File]::WriteAllText($settingsPath, ($settings | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))
                 Write-Step "SFTP group name updated to: $newGroup" -Type Success
                 Write-Log "SFTP group changed to: $newGroup"
             }

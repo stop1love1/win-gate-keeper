@@ -16,24 +16,25 @@ function Enable-FileAudit {
     Write-Step "Enabling audit policy for Object Access (File System)..." -Type Info
 
     # Enable success and failure auditing for Object Access
+    # Use GUIDs instead of English names for non-English OS compatibility
     $auditCmds = @(
-        @{ Name = "File System";        Subcategory = "File System";        Success = $true; Failure = $true },
-        @{ Name = "Logon";              Subcategory = "Logon";              Success = $true; Failure = $true },
-        @{ Name = "Logoff";             Subcategory = "Logoff";             Success = $true; Failure = $false },
-        @{ Name = "Handle Manipulation"; Subcategory = "Handle Manipulation"; Success = $true; Failure = $false },
-        @{ Name = "File Share";         Subcategory = "File Share";         Success = $true; Failure = $true }
+        @{ Name = "File System";         GUID = "{0CCE921D-69AE-11D9-BED3-505054503030}"; Success = $true; Failure = $true },
+        @{ Name = "Logon";               GUID = "{0CCE9215-69AE-11D9-BED3-505054503030}"; Success = $true; Failure = $true },
+        @{ Name = "Logoff";              GUID = "{0CCE9216-69AE-11D9-BED3-505054503030}"; Success = $true; Failure = $false },
+        @{ Name = "Handle Manipulation";  GUID = "{0CCE9223-69AE-11D9-BED3-505054503030}"; Success = $true; Failure = $false },
+        @{ Name = "File Share";          GUID = "{0CCE9224-69AE-11D9-BED3-505054503030}"; Success = $true; Failure = $true }
     )
 
     foreach ($cmd in $auditCmds) {
-        $args = @("/set", "/subcategory:$($cmd.Subcategory)")
-        if ($cmd.Success) { $args += "/success:enable" }
-        if ($cmd.Failure) { $args += "/failure:enable" }
-        $result = & auditpol @args 2>&1
+        $auditArgs = @("/set", "/subcategory:$($cmd.GUID)")
+        if ($cmd.Success) { $auditArgs += "/success:enable" }
+        if ($cmd.Failure) { $auditArgs += "/failure:enable" }
+        $result = & auditpol @auditArgs 2>&1
         if ($LASTEXITCODE -eq 0) {
             Write-Step "$($cmd.Name) auditing enabled." -Type Success
         }
         else {
-            Write-Step "$($cmd.Name) audit failed (code $LASTEXITCODE). Non-English OS? Check subcategory names." -Type Warning
+            Write-Step "$($cmd.Name) audit failed (code $LASTEXITCODE)." -Type Warning
         }
     }
 
@@ -170,7 +171,7 @@ function Show-AuditStatus {
     Write-Host "  Windows Audit Policies:" -ForegroundColor White
     Write-Separator
 
-    $auditOutput = auditpol /get /category:"Object Access" 2>$null
+    $auditOutput = auditpol /get /category:"Object Access" 2>&1
     if ($auditOutput) {
         foreach ($line in $auditOutput) {
             if ($line -match "^\s+(File System|File Share|Handle Manipulation)") {
@@ -184,7 +185,7 @@ function Show-AuditStatus {
         }
     }
 
-    $auditOutput = auditpol /get /category:"Logon/Logoff" 2>$null
+    $auditOutput = auditpol /get /category:"Logon/Logoff" 2>&1
     if ($auditOutput) {
         foreach ($line in $auditOutput) {
             if ($line -match "^\s+(Logon|Logoff)\s") {
