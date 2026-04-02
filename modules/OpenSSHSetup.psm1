@@ -216,23 +216,18 @@ function Show-OpenSSHStatus {
 
 function Show-OpenSSHMenu {
     while ($true) {
-        Clear-Host
-        Write-MenuHeader "OpenSSH Server Management"
-        Write-Host ""
-        Write-MenuOption "1" "Install & Configure OpenSSH Server"
-        Write-MenuOption "2" "Set Default Shell"
-        Write-MenuOption "3" "Show OpenSSH Status"
-        Write-Separator
-        Write-MenuOption "B" "Back to Main Menu"
-
-        $choice = Read-MenuChoice
-
+        $choice = Select-MenuOption -Title "OpenSSH Server Management" -Items @(
+            @{ Key = "1"; Label = "Install & Configure OpenSSH Server" }
+            @{ Key = "2"; Label = "Set Default Shell" }
+            @{ Key = "3"; Label = "Show OpenSSH Status" }
+            @{ Separator = $true }
+            @{ Key = "B"; Label = "Back to Main Menu" }
+        )
         switch ($choice) {
             "1" { Install-OpenSSHServer }
             "2" { Set-DefaultShell }
             "3" { Show-OpenSSHStatus }
             "B" { return }
-            default { Write-Step "Invalid option." -Type Warning; Start-Sleep -Seconds 1 }
         }
     }
 }

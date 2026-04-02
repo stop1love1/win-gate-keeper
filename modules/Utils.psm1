@@ -82,6 +82,146 @@ function Read-MenuChoice {
     return (Read-Host).Trim().ToUpper()
 }
 
+function Select-MenuOption {
+    <#
+    .SYNOPSIS
+        Interactive arrow-key menu selector. Use Up/Down to navigate, Enter to select.
+        Also supports typing the shortcut key directly.
+    .PARAMETER Items
+        Array of hashtables: @{ Key="1"; Label="Option"; Status="OK" }
+        For separators: @{ Separator=$true }
+    .PARAMETER Title
+        Menu header title (optional, displayed above items)
+    #>
+    param(
+        [array]$Items,
+        [string]$Title = "",
+        [scriptblock]$BeforeRender = $null
+    )
+
+    # Filter selectable items (non-separator)
+    $selectableItems = @($Items | Where-Object { -not $_.Separator })
+    if ($selectableItems.Count -eq 0) { return $null }
+
+    $selectedIndex = 0
+    $cursorVisible = [Console]::CursorVisible
+    [Console]::CursorVisible = $false
+
+    try {
+        while ($true) {
+            Clear-Host
+
+            # Run custom render (e.g. banner, status)
+            if ($BeforeRender) { & $BeforeRender }
+
+            if ($Title) { Write-MenuHeader $Title }
+            Write-Host ""
+
+            # Render all items
+            $selectableIdx = 0
+            foreach ($item in $Items) {
+                if ($item.Separator) {
+                    Write-Separator
+                    continue
+                }
+
+                $isSelected = ($selectableIdx -eq $selectedIndex)
+                $key = $item.Key
+                $label = $item.Label
+                $status = $item.Status
+
+                if ($isSelected) {
+                    # Highlighted row
+                    Write-Host "  > " -ForegroundColor White -NoNewline
+                    Write-Host "[$key]" -ForegroundColor Black -BackgroundColor Yellow -NoNewline
+                    Write-Host " $label" -ForegroundColor White -BackgroundColor DarkCyan -NoNewline
+                    if ($status) {
+                        $statusColor = switch -Regex ($status) {
+                            "^OK"       { "Green" }
+                            "^FAIL"     { "Red" }
+                            "^\d+ user" { "Cyan" }
+                            default     { "DarkYellow" }
+                        }
+                        $statusText = switch ($status) {
+                            "OK"   { " [OK]" }
+                            "FAIL" { " [NOT CONFIGURED]" }
+                            default { " [$status]" }
+                        }
+                        Write-Host $statusText -ForegroundColor $statusColor -BackgroundColor DarkCyan -NoNewline
+                    }
+                    # Pad rest of line with background
+                    $lineLen = 4 + $key.Length + 2 + $label.Length + 1
+                    if ($status) {
+                        $statusText = switch ($status) { "OK" { " [OK]" }; "FAIL" { " [NOT CONFIGURED]" }; default { " [$status]" } }
+                        $lineLen += $statusText.Length
+                    }
+                    $pad = [Math]::Max(0, 56 - $lineLen + 4)
+                    Write-Host (" " * $pad) -BackgroundColor DarkCyan
+                }
+                else {
+                    # Normal row
+                    Write-Host "    " -NoNewline
+                    Write-Host "[$key]" -ForegroundColor Yellow -NoNewline
+                    Write-Host " $label" -NoNewline
+                    if ($status) {
+                        switch ($status) {
+                            "OK"   { Write-Host " [OK]" -ForegroundColor Green }
+                            "FAIL" { Write-Host " [NOT CONFIGURED]" -ForegroundColor Red }
+                            default {
+                                $c = if ($status -match "^\d+ user") { "Cyan" } else { "DarkYellow" }
+                                Write-Host " [$status]" -ForegroundColor $c
+                            }
+                        }
+                    }
+                    else {
+                        Write-Host ""
+                    }
+                }
+                $selectableIdx++
+            }
+
+            Write-Host ""
+            Write-Host "  Use " -ForegroundColor DarkGray -NoNewline
+            Write-Host "[Up/Down]" -ForegroundColor Cyan -NoNewline
+            Write-Host " to navigate, " -ForegroundColor DarkGray -NoNewline
+            Write-Host "[Enter]" -ForegroundColor Cyan -NoNewline
+            Write-Host " to select, or press a shortcut key" -ForegroundColor DarkGray
+
+            # Read key input
+            $keyInfo = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+
+            switch ($keyInfo.VirtualKeyCode) {
+                38 {
+                    # Up arrow
+                    $selectedIndex = if ($selectedIndex -gt 0) { $selectedIndex - 1 } else { $selectableItems.Count - 1 }
+                }
+                40 {
+                    # Down arrow
+                    $selectedIndex = if ($selectedIndex -lt ($selectableItems.Count - 1)) { $selectedIndex + 1 } else { 0 }
+                }
+                13 {
+                    # Enter
+                    return $selectableItems[$selectedIndex].Key
+                }
+                default {
+                    # Check if typed character matches a shortcut key
+                    $ch = $keyInfo.Character
+                    if ($ch) {
+                        $typed = $ch.ToString().ToUpper()
+                        $match = $selectableItems | Where-Object { $_.Key -eq $typed }
+                        if ($match) {
+                            return $typed
+                        }
+                    }
+                }
+            }
+        }
+    }
+    finally {
+        [Console]::CursorVisible = $cursorVisible
+    }
+}
+
 function Confirm-Action {
     param([string]$Message)
     Write-Host ""
@@ -142,6 +282,28 @@ function Write-Log {
     }
 }
 
+function New-AdminSystemAcl {
+    <#
+    .SYNOPSIS
+        Creates a standard ACL with inheritance blocked, only Admins + SYSTEM full control.
+        Returns the ACL object for further customization before applying.
+    #>
+    param([string]$Path)
+    $acl = Get-Acl $Path
+    $acl.SetAccessRuleProtection($true, $false)
+    $acl.Access | ForEach-Object { $acl.RemoveAccessRule($_) } | Out-Null
+
+    $adminRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+        "BUILTIN\Administrators", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow"
+    )
+    $systemRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+        "NT AUTHORITY\SYSTEM", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow"
+    )
+    $acl.AddAccessRule($adminRule)
+    $acl.AddAccessRule($systemRule)
+    return $acl
+}
+
 function Invoke-LogRotation {
     $settings = Get-Settings
     if (-not $settings) { return }
@@ -172,10 +334,17 @@ function Invoke-LogRotation {
                 Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
                 $removed++
             }
-        # Remove empty directories
+        # Remove empty directories (catch race: a file may appear between check and delete)
         Get-ChildItem -Path $transcriptPath -Directory -Recurse -ErrorAction SilentlyContinue |
-            Where-Object { @(Get-ChildItem $_.FullName -Force -ErrorAction SilentlyContinue).Count -eq 0 } |
-            Remove-Item -Force -ErrorAction SilentlyContinue
+            Sort-Object { $_.FullName.Length } -Descending |
+            ForEach-Object {
+                try {
+                    [System.IO.Directory]::Delete($_.FullName, $false)
+                }
+                catch {
+                    # Directory not empty or already removed — expected, ignore
+                }
+            }
     }
 
     if ($removed -gt 0) {

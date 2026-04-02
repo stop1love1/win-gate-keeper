@@ -5,7 +5,7 @@
 
 #Requires -Version 5.1
 
-$ErrorActionPreference = "Continue"
+$ErrorActionPreference = "Stop"
 
 # Import all modules
 $modulePath = Join-Path $PSScriptRoot "modules"
@@ -70,32 +70,25 @@ function Get-QuickStatus {
 
 function Show-MainMenu {
     while ($true) {
-        Clear-Host
-        Write-Banner
-
-        # Quick status check
         $st = Get-QuickStatus
-
-        Write-MenuHeader "Main Menu"
-        Write-Host ""
-        Write-MenuOption "0" "Quick Setup (All Steps)"
-        Write-Host ""
-        Write-MenuOption "1" "OpenSSH Server Management" -Status $st.SSH
-        Write-MenuOption "2" "User Management" -Status $st.Users
-        Write-MenuOption "3" "Directory & Permissions" -Status $st.Dirs
-        Write-MenuOption "4" "SFTP Configuration" -Status $st.SFTP
-        Write-MenuOption "5" "Audit & Logging" -Status $st.Audit
-        Write-MenuOption "6" "SSH Security & Sessions"
-        Write-Separator
-        Write-MenuOption "S" "System Status Overview"
-        Write-MenuOption "D" "Doctor (Health Check & Auto-Fix)"
-        Write-MenuOption "R" "System Reset / Clear Data"
-        Write-MenuOption "C" "Edit Configuration"
-        Write-MenuOption "A" "About / Author"
-        Write-Separator
-        Write-MenuOption "Q" "Quit"
-
-        $choice = Read-MenuChoice
+        $choice = Select-MenuOption -Title "Main Menu" -BeforeRender { Write-Banner } -Items @(
+            @{ Key = "0"; Label = "Quick Setup (All Steps)" }
+            @{ Separator = $true }
+            @{ Key = "1"; Label = "OpenSSH Server Management"; Status = $st.SSH }
+            @{ Key = "2"; Label = "User Management"; Status = $st.Users }
+            @{ Key = "3"; Label = "Directory & Permissions"; Status = $st.Dirs }
+            @{ Key = "4"; Label = "SFTP Configuration"; Status = $st.SFTP }
+            @{ Key = "5"; Label = "Audit & Logging"; Status = $st.Audit }
+            @{ Key = "6"; Label = "SSH Security & Sessions" }
+            @{ Separator = $true }
+            @{ Key = "S"; Label = "System Status Overview" }
+            @{ Key = "D"; Label = "Doctor (Health Check & Auto-Fix)" }
+            @{ Key = "R"; Label = "System Reset / Clear Data" }
+            @{ Key = "C"; Label = "Edit Configuration" }
+            @{ Key = "A"; Label = "About / Author" }
+            @{ Separator = $true }
+            @{ Key = "Q"; Label = "Quit" }
+        )
 
         switch ($choice) {
             "0" { Start-QuickSetup; $script:_statusCache = $null }
@@ -116,10 +109,6 @@ function Show-MainMenu {
                 Write-Host ""
                 return
             }
-            default {
-                Write-Step "Invalid option. Please try again." -Type Warning
-                Start-Sleep -Seconds 1
-            }
         }
     }
 }
@@ -128,21 +117,16 @@ function Show-AuthorInfo {
     $repoUrl = "https://github.com/stop1love1/win-gate-keeper"
 
     while ($true) {
-        Clear-Host
-        Write-Banner
-        Write-MenuHeader "About WinGateKeeper"
-
-        Write-Host ""
-        Write-Host "  Author:     stop1love1" -ForegroundColor Cyan
-        Write-Host "  Repository: $repoUrl" -ForegroundColor White
-        Write-Host ""
-
-        Write-MenuOption "1" "Open repository in default browser"
-        Write-Separator
-        Write-MenuOption "B" "Back to Main Menu"
-
-        $choice = Read-MenuChoice
-
+        $choice = Select-MenuOption -Title "About WinGateKeeper" -BeforeRender {
+            Write-Banner
+            Write-Host ""
+            Write-Host "  Author:     stop1love1" -ForegroundColor Cyan
+            Write-Host "  Repository: $repoUrl" -ForegroundColor White
+        } -Items @(
+            @{ Key = "1"; Label = "Open repository in default browser" }
+            @{ Separator = $true }
+            @{ Key = "B"; Label = "Back to Main Menu" }
+        )
         switch ($choice) {
             "1" {
                 try {
@@ -155,10 +139,6 @@ function Show-AuthorInfo {
                 Pause-Menu
             }
             "B" { return }
-            default {
-                Write-Step "Invalid option. Please try again." -Type Warning
-                Start-Sleep -Seconds 1
-            }
         }
     }
 }
@@ -195,13 +175,29 @@ function Edit-Configuration {
             Write-Host "  Enter new base path: " -ForegroundColor White -NoNewline
             $newPath = (Read-Host).Trim()
             if ($newPath) {
-                $settings.BasePath = $newPath
-                $settings.UsersRoot = Join-Path $newPath "Users"
-                $settings.LogsPath = Join-Path $newPath "Logs"
-                $settings | ConvertTo-Json -Depth 5 | Set-Content $settingsPath -Encoding UTF8
-                Reset-LogCache
-                Write-Step "Configuration updated." -Type Success
-                Write-Log "Base path changed to: $newPath"
+                # Validate: block dangerous system paths
+                $blocked = @(
+                    "$env:SystemRoot", "$env:SystemRoot\System32", "$env:SystemRoot\SysWOW64",
+                    "$env:ProgramFiles", "${env:ProgramFiles(x86)}", "$env:ProgramData",
+                    "C:\Windows", "C:\Windows\System32", "C:\Program Files", "C:\Program Files (x86)"
+                )
+                $resolvedNew = $newPath.TrimEnd('\')
+                $isBlocked = $blocked | Where-Object { $resolvedNew -ieq $_.TrimEnd('\') }
+                if ($isBlocked) {
+                    Write-Step "Cannot use '$newPath' as base path - this is a protected system directory." -Type Error
+                }
+                elseif ($newPath -notmatch '^[A-Z]:\\') {
+                    Write-Step "Please enter a full path starting with a drive letter (e.g. D:\WinGateKeeper)." -Type Error
+                }
+                else {
+                    $settings.BasePath = $newPath
+                    $settings.UsersRoot = Join-Path $newPath "Users"
+                    $settings.LogsPath = Join-Path $newPath "Logs"
+                    $settings | ConvertTo-Json -Depth 5 | Set-Content $settingsPath -Encoding UTF8
+                    Reset-LogCache
+                    Write-Step "Configuration updated." -Type Success
+                    Write-Log "Base path changed to: $newPath"
+                }
             }
             Pause-Menu
         }

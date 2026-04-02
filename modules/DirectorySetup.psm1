@@ -36,39 +36,18 @@ function Initialize-BaseDirectories {
 
     # Set base path permissions - only Administrators and SYSTEM
     Write-Step "Setting ACLs on base path: $($settings.BasePath)" -Type Info
-
-    $acl = Get-Acl $settings.BasePath
-    $acl.SetAccessRuleProtection($true, $false)
-    $acl.Access | ForEach-Object { $acl.RemoveAccessRule($_) } | Out-Null
-
-    $adminRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-        "BUILTIN\Administrators", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow"
-    )
-    $systemRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-        "NT AUTHORITY\SYSTEM", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow"
-    )
-    $acl.AddAccessRule($adminRule)
-    $acl.AddAccessRule($systemRule)
+    $acl = New-AdminSystemAcl -Path $settings.BasePath
     Set-Acl -Path $settings.BasePath -AclObject $acl
-
     Write-Step "Base directory ACLs configured." -Type Success
 
-    # Users root: Admins + SYSTEM full, Users read+execute on root only (for SFTP chroot)
+    # Users root: Admins + SYSTEM full, Users Traverse only (no ListDirectory)
     Write-Step "Setting ACLs on users root: $($settings.UsersRoot)" -Type Info
-    $uAcl = Get-Acl $settings.UsersRoot
-    $uAcl.SetAccessRuleProtection($true, $false)
-    $uAcl.Access | ForEach-Object { $uAcl.RemoveAccessRule($_) } | Out-Null
-
-    $uAcl.AddAccessRule($adminRule)
-    $uAcl.AddAccessRule($systemRule)
-
-    # Users need to traverse the root for SFTP chroot
-    $usersReadRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-        "BUILTIN\Users", "ReadAndExecute", "None", "None", "Allow"
+    $uAcl = New-AdminSystemAcl -Path $settings.UsersRoot
+    $usersTraverseRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+        "BUILTIN\Users", "Traverse", "None", "None", "Allow"
     )
-    $uAcl.AddAccessRule($usersReadRule)
+    $uAcl.AddAccessRule($usersTraverseRule)
     Set-Acl -Path $settings.UsersRoot -AclObject $uAcl
-
     Write-Step "Users root ACLs configured." -Type Success
     Write-Log "Base directory structure initialized."
 
@@ -176,23 +155,18 @@ function Repair-UserPermissions {
 
 function Show-DirectoryMenu {
     while ($true) {
-        Clear-Host
-        Write-MenuHeader "Directory & Permissions Management"
-        Write-Host ""
-        Write-MenuOption "1" "Initialize Base Directories"
-        Write-MenuOption "2" "Show Directory Status"
-        Write-MenuOption "3" "Repair User Permissions"
-        Write-Separator
-        Write-MenuOption "B" "Back to Main Menu"
-
-        $choice = Read-MenuChoice
-
+        $choice = Select-MenuOption -Title "Directory & Permissions Management" -Items @(
+            @{ Key = "1"; Label = "Initialize Base Directories" }
+            @{ Key = "2"; Label = "Show Directory Status" }
+            @{ Key = "3"; Label = "Repair User Permissions" }
+            @{ Separator = $true }
+            @{ Key = "B"; Label = "Back to Main Menu" }
+        )
         switch ($choice) {
             "1" { Initialize-BaseDirectories }
             "2" { Show-DirectoryStatus }
             "3" { Repair-UserPermissions }
             "B" { return }
-            default { Write-Step "Invalid option." -Type Warning; Start-Sleep -Seconds 1 }
         }
     }
 }

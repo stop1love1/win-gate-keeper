@@ -49,8 +49,11 @@ function Set-SFTPChrootConfig {
     $chrootDir = $settings.UsersRoot
 
     # Windows OpenSSH does not support %u/%h tokens in ChrootDirectory.
-    # Per-user isolation is enforced via NTFS ACLs on each user subdirectory.
-    # ChrootDirectory points to UsersRoot; each user only sees their own folder.
+    # Per-user isolation is enforced via NTFS ACLs: each user's subdirectory
+    # grants Modify only to that user. UsersRoot grants users only Traverse
+    # (no ListDirectory), so users cannot enumerate other usernames.
+    # NOTE: OpenSSH chroot requires the chroot directory to be owned by
+    # Administrators with no write access for other users.
     $matchBlock = @"
 
 # BEGIN WinGateKeeper SFTP Configuration
@@ -230,23 +233,18 @@ function Test-SFTPAccess {
 
 function Show-SFTPMenu {
     while ($true) {
-        Clear-Host
-        Write-MenuHeader "SFTP Configuration"
-        Write-Host ""
-        Write-MenuOption "1" "Configure SFTP Chroot Jail"
-        Write-MenuOption "2" "View sshd_config"
-        Write-MenuOption "3" "Test SFTP Access for User"
-        Write-Separator
-        Write-MenuOption "B" "Back to Main Menu"
-
-        $choice = Read-MenuChoice
-
+        $choice = Select-MenuOption -Title "SFTP Configuration" -Items @(
+            @{ Key = "1"; Label = "Configure SFTP Chroot Jail" }
+            @{ Key = "2"; Label = "View sshd_config" }
+            @{ Key = "3"; Label = "Test SFTP Access for User" }
+            @{ Separator = $true }
+            @{ Key = "B"; Label = "Back to Main Menu" }
+        )
         switch ($choice) {
             "1" { Set-SFTPChrootConfig }
             "2" { Show-SSHDConfig }
             "3" { Test-SFTPAccess }
             "B" { return }
-            default { Write-Step "Invalid option." -Type Warning; Start-Sleep -Seconds 1 }
         }
     }
 }

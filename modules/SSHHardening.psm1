@@ -14,8 +14,12 @@ function Set-SSHHardening {
     $ssh = $Settings.SSHSecurity
     if (-not $ssh) { return $ConfigContent }
 
+    # Sync SSH port from settings to sshd_config
+    $sshPort = if ($Settings.SSHPort) { $Settings.SSHPort } else { 22 }
+
     # Build hardening directives
     $directives = @{
+        "Port"                 = $sshPort
         "MaxAuthTries"         = if ($ssh.MaxAuthTries) { $ssh.MaxAuthTries } else { 3 }
         "ClientAliveInterval"  = if ($ssh.ClientAliveInterval) { $ssh.ClientAliveInterval } else { 300 }
         "ClientAliveCountMax"  = if ($ssh.ClientAliveCountMax) { $ssh.ClientAliveCountMax } else { 2 }
@@ -251,15 +255,25 @@ function Update-SettingsField {
         [string]$Value
     )
     $settingsPath = Join-Path $PSScriptRoot "..\config\settings.json"
-    if (-not (Test-Path $settingsPath)) { return }
+    if (-not (Test-Path $settingsPath)) {
+        Write-Step "Settings file not found." -Type Error
+        return
+    }
     $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
     $parts = $FieldPath -split "\."
-    if ($parts.Count -eq 2) {
-        $settings.($parts[0]).($parts[1]) = $Value
+
+    # Navigate to the parent object for arbitrary nesting depth
+    $current = $settings
+    for ($i = 0; $i -lt $parts.Count - 1; $i++) {
+        $next = $current.($parts[$i])
+        if ($null -eq $next) {
+            Write-Step "Settings path '$FieldPath' not found at '$($parts[$i])'." -Type Error
+            return
+        }
+        $current = $next
     }
-    elseif ($parts.Count -eq 1) {
-        $settings.($parts[0]) = $Value
-    }
+    $current.($parts[-1]) = $Value
+
     $settings | ConvertTo-Json -Depth 5 | Set-Content $settingsPath -Encoding UTF8
 }
 
@@ -279,18 +293,15 @@ function Show-ActiveSessions {
         return
     }
 
-    # The first sshd is the listener, the rest are sessions
+    # Identify the listener as the oldest sshd process; the rest are sessions
+    $listenerPid = ($sshdProcesses | Sort-Object StartTime | Select-Object -First 1).Id
+
     Write-Host "  PID       Started              Memory" -ForegroundColor White
     Write-Host ("  " + "-" * 56) -ForegroundColor DarkGray
 
     $sessionProcs = @()
     foreach ($proc in $sshdProcesses) {
-        # Skip the listener (usually the oldest / parent process)
-        if ($proc.Id -eq $sshdProcesses[0].Id -and $sshdProcesses.Count -gt 1) {
-            # Check if this is the parent by looking at earliest start time
-            $oldest = $sshdProcesses | Sort-Object StartTime | Select-Object -First 1
-            if ($proc.Id -eq $oldest.Id) { continue }
-        }
+        if ($proc.Id -eq $listenerPid) { continue }
         $sessionProcs += $proc
         $mem = "{0:N1} MB" -f ($proc.WorkingSet64 / 1MB)
         $started = if ($proc.StartTime) { $proc.StartTime.ToString("yyyy-MM-dd HH:mm:ss") } else { "Unknown" }
@@ -369,20 +380,16 @@ function Disconnect-SSHSession {
 
 function Show-SSHSecurityMenu {
     while ($true) {
-        Clear-Host
-        Write-MenuHeader "SSH Security & Sessions"
-        Write-Host ""
-        Write-MenuOption "1" "Apply SSH Hardening (sshd_config)"
-        Write-MenuOption "2" "Configure Login Banner"
-        Write-MenuOption "3" "Configure IP Restriction"
-        Write-Separator
-        Write-MenuOption "4" "View Active Sessions"
-        Write-MenuOption "5" "Force Disconnect Session"
-        Write-Separator
-        Write-MenuOption "B" "Back to Main Menu"
-
-        $choice = Read-MenuChoice
-
+        $choice = Select-MenuOption -Title "SSH Security & Sessions" -Items @(
+            @{ Key = "1"; Label = "Apply SSH Hardening (sshd_config)" }
+            @{ Key = "2"; Label = "Configure Login Banner" }
+            @{ Key = "3"; Label = "Configure IP Restriction" }
+            @{ Separator = $true }
+            @{ Key = "4"; Label = "View Active Sessions" }
+            @{ Key = "5"; Label = "Force Disconnect Session" }
+            @{ Separator = $true }
+            @{ Key = "B"; Label = "Back to Main Menu" }
+        )
         switch ($choice) {
             "1" { Invoke-ApplyHardening }
             "2" { Set-LoginBanner }
@@ -390,7 +397,6 @@ function Show-SSHSecurityMenu {
             "4" { Show-ActiveSessions; Pause-Menu }
             "5" { Disconnect-SSHSession }
             "B" { return }
-            default { Write-Step "Invalid option." -Type Warning; Start-Sleep -Seconds 1 }
         }
     }
 }

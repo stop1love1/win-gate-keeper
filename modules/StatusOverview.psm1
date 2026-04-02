@@ -327,31 +327,16 @@ function Initialize-BaseDirectoriesCore {
         }
     }
 
-    # Set base path ACLs
-    $acl = Get-Acl $Settings.BasePath
-    $acl.SetAccessRuleProtection($true, $false)
-    $acl.Access | ForEach-Object { $acl.RemoveAccessRule($_) } | Out-Null
-
-    $adminRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-        "BUILTIN\Administrators", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow"
-    )
-    $systemRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-        "NT AUTHORITY\SYSTEM", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow"
-    )
-    $acl.AddAccessRule($adminRule)
-    $acl.AddAccessRule($systemRule)
+    # Set base path ACLs (Admins + SYSTEM only)
+    $acl = New-AdminSystemAcl -Path $Settings.BasePath
     Set-Acl -Path $Settings.BasePath -AclObject $acl
 
-    # Users root ACLs
-    $uAcl = Get-Acl $Settings.UsersRoot
-    $uAcl.SetAccessRuleProtection($true, $false)
-    $uAcl.Access | ForEach-Object { $uAcl.RemoveAccessRule($_) } | Out-Null
-    $uAcl.AddAccessRule($adminRule)
-    $uAcl.AddAccessRule($systemRule)
-    $usersReadRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-        "BUILTIN\Users", "ReadAndExecute", "None", "None", "Allow"
+    # Users root ACLs (Admins + SYSTEM + Users Traverse)
+    $uAcl = New-AdminSystemAcl -Path $Settings.UsersRoot
+    $usersTraverseRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+        "BUILTIN\Users", "Traverse", "None", "None", "Allow"
     )
-    $uAcl.AddAccessRule($usersReadRule)
+    $uAcl.AddAccessRule($usersTraverseRule)
     Set-Acl -Path $Settings.UsersRoot -AclObject $uAcl
 }
 

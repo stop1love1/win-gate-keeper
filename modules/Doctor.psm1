@@ -402,16 +402,12 @@ function Invoke-Doctor {
 
 function Show-DoctorMenu {
     while ($true) {
-        Clear-Host
-        Write-MenuHeader "Doctor - System Health Check"
-        Write-Host ""
-        Write-MenuOption "1" "Run Health Check (report only)"
-        Write-MenuOption "2" "Run Health Check + Auto-Fix"
-        Write-Separator
-        Write-MenuOption "B" "Back to Main Menu"
-
-        $choice = Read-MenuChoice
-
+        $choice = Select-MenuOption -Title "Doctor - System Health Check" -Items @(
+            @{ Key = "1"; Label = "Run Health Check (report only)" }
+            @{ Key = "2"; Label = "Run Health Check + Auto-Fix" }
+            @{ Separator = $true }
+            @{ Key = "B"; Label = "Back to Main Menu" }
+        )
         switch ($choice) {
             "1" {
                 Invoke-Doctor
@@ -427,7 +423,6 @@ function Show-DoctorMenu {
                 Pause-Menu
             }
             "B" { return }
-            default { Write-Step "Invalid option." -Type Warning; Start-Sleep -Seconds 1 }
         }
     }
 }

@@ -401,22 +401,18 @@ function Show-RecentFileAccessEvents {
 
 function Show-AuditMenu {
     while ($true) {
-        Clear-Host
-        Write-MenuHeader "Audit & Logging"
-        Write-Host ""
-        Write-MenuOption "1" "Enable File System Audit Policy"
-        Write-MenuOption "2" "Enable Audit on User Directories"
-        Write-MenuOption "3" "Enable PowerShell Logging"
-        Write-Separator
-        Write-MenuOption "4" "Show Audit & Logging Status"
-        Write-MenuOption "5" "View Recent WinGateKeeper Logs"
-        Write-MenuOption "6" "View Recent Login Events"
-        Write-MenuOption "7" "View Recent File Access Events"
-        Write-Separator
-        Write-MenuOption "B" "Back to Main Menu"
-
-        $choice = Read-MenuChoice
-
+        $choice = Select-MenuOption -Title "Audit & Logging" -Items @(
+            @{ Key = "1"; Label = "Enable File System Audit Policy" }
+            @{ Key = "2"; Label = "Enable Audit on User Directories" }
+            @{ Key = "3"; Label = "Enable PowerShell Logging" }
+            @{ Separator = $true }
+            @{ Key = "4"; Label = "Show Audit & Logging Status" }
+            @{ Key = "5"; Label = "View Recent WinGateKeeper Logs" }
+            @{ Key = "6"; Label = "View Recent Login Events" }
+            @{ Key = "7"; Label = "View Recent File Access Events" }
+            @{ Separator = $true }
+            @{ Key = "B"; Label = "Back to Main Menu" }
+        )
         switch ($choice) {
             "1" { Enable-FileAudit }
             "2" { Enable-DirectoryAudit }
@@ -426,7 +422,6 @@ function Show-AuditMenu {
             "6" { Show-RecentLoginEvents }
             "7" { Show-RecentFileAccessEvents }
             "B" { return }
-            default { Write-Step "Invalid option." -Type Warning; Start-Sleep -Seconds 1 }
         }
     }
 }

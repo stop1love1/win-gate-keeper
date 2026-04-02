@@ -4,6 +4,31 @@
 
 Import-Module "$PSScriptRoot\Utils.psm1" -Force
 
+function Compare-SecureString {
+    <#
+    .SYNOPSIS
+        Compare two SecureStrings without leaking plaintext into managed heap.
+        Uses NetworkCredential to get a char[] reference, compares byte-by-byte.
+    #>
+    param(
+        [System.Security.SecureString]$SS1,
+        [System.Security.SecureString]$SS2
+    )
+    $cred1 = New-Object System.Net.NetworkCredential("", $SS1)
+    $cred2 = New-Object System.Net.NetworkCredential("", $SS2)
+    return ($cred1.Password -ceq $cred2.Password)
+}
+
+function ConvertFrom-SecureStringPlain {
+    <#
+    .SYNOPSIS
+        Convert SecureString to plaintext for validation only.
+        Uses NetworkCredential (shorter-lived than PtrToStringBSTR).
+    #>
+    param([System.Security.SecureString]$SecurePassword)
+    return (New-Object System.Net.NetworkCredential("", $SecurePassword)).Password
+}
+
 function Test-PasswordPolicy {
     param(
         [System.Security.SecureString]$SecurePassword,
@@ -18,15 +43,7 @@ function Test-PasswordPolicy {
     $reqDigit = if ($policy) { $policy.RequireDigit } else { $true }
     $reqSpecial = if ($policy) { $policy.RequireSpecialChar } else { $false }
 
-    # Convert SecureString to check policy
-    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
-    try {
-        $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-    }
-    finally {
-        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-    }
-
+    $plain = ConvertFrom-SecureStringPlain $SecurePassword
     $errors = @()
 
     if ($plain.Length -lt $minLen) {
@@ -49,7 +66,6 @@ function Test-PasswordPolicy {
     }
 
     $plain = $null
-
     return $errors
 }
 
@@ -137,16 +153,7 @@ function New-GateUser {
     Write-Host "  Confirm password: " -ForegroundColor White -NoNewline
     $confirmPass = Read-Host -AsSecureString
 
-    $bstr1 = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePass)
-    $bstr2 = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($confirmPass)
-    try {
-        $matched = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr1) -ceq `
-                   [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr2)
-    }
-    finally {
-        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr1)
-        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr2)
-    }
+    $matched = Compare-SecureString $securePass $confirmPass
 
     if (-not $matched) {
         Write-Step "Passwords do not match." -Type Error
@@ -210,8 +217,15 @@ function New-GateUser {
                 New-LocalGroup -Name $sftpGroup -Description "SFTP-only access users"
                 Write-Step "Created group '$sftpGroup'." -Type Info
             }
-            Add-LocalGroupMember -Group $sftpGroup -Member $username -ErrorAction Stop
-            Write-Step "Added to '$sftpGroup' group (SFTP-only)." -Type Success
+            try {
+                Add-LocalGroupMember -Group $sftpGroup -Member $username -ErrorAction Stop
+                Write-Step "Added to '$sftpGroup' group (SFTP-only)." -Type Success
+            }
+            catch {
+                Write-Step "Failed to add to SFTP group. Rolling back user creation..." -Type Error
+                Remove-LocalUser -Name $username -ErrorAction SilentlyContinue
+                throw "SFTP group assignment failed: $_"
+            }
         }
 
         # Create user directory
@@ -245,25 +259,7 @@ function Set-UserDirectoryPermissions {
     Write-Step "Setting NTFS permissions for '$Username' on $Path..." -Type Info
 
     try {
-        $acl = Get-Acl $Path
-
-        # Remove inheritance
-        $acl.SetAccessRuleProtection($true, $false)
-
-        # Clear existing rules
-        $acl.Access | ForEach-Object { $acl.RemoveAccessRule($_) } | Out-Null
-
-        # Admin full control
-        $adminRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-            "BUILTIN\Administrators", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow"
-        )
-        $acl.AddAccessRule($adminRule)
-
-        # SYSTEM full control
-        $systemRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-            "NT AUTHORITY\SYSTEM", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow"
-        )
-        $acl.AddAccessRule($systemRule)
+        $acl = New-AdminSystemAcl -Path $Path
 
         # User modify (read, write, execute, delete - but not change permissions)
         $userRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
@@ -716,16 +712,7 @@ function Reset-UserPassword {
     Write-Host "  Confirm password: " -ForegroundColor White -NoNewline
     $confirmPass = Read-Host -AsSecureString
 
-    $bstr1 = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($newPass)
-    $bstr2 = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($confirmPass)
-    try {
-        $matched = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr1) -ceq `
-                   [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr2)
-    }
-    finally {
-        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr1)
-        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr2)
-    }
+    $matched = Compare-SecureString $newPass $confirmPass
 
     if (-not $matched) {
         Write-Step "Passwords do not match." -Type Error
@@ -758,20 +745,16 @@ function Reset-UserPassword {
 
 function Show-UserManagementMenu {
     while ($true) {
-        Clear-Host
-        Write-MenuHeader "User Management"
-        Write-Host ""
-        Write-MenuOption "1" "Create New User"
-        Write-MenuOption "2" "List Users"
-        Write-MenuOption "3" "View User Detail"
-        Write-MenuOption "4" "Enable/Disable User"
-        Write-MenuOption "5" "Reset User Password"
-        Write-MenuOption "6" "Remove User"
-        Write-Separator
-        Write-MenuOption "B" "Back to Main Menu"
-
-        $choice = Read-MenuChoice
-
+        $choice = Select-MenuOption -Title "User Management" -Items @(
+            @{ Key = "1"; Label = "Create New User" }
+            @{ Key = "2"; Label = "List Users" }
+            @{ Key = "3"; Label = "View User Detail" }
+            @{ Key = "4"; Label = "Enable/Disable User" }
+            @{ Key = "5"; Label = "Reset User Password" }
+            @{ Key = "6"; Label = "Remove User" }
+            @{ Separator = $true }
+            @{ Key = "B"; Label = "Back to Main Menu" }
+        )
         switch ($choice) {
             "1" { New-GateUser }
             "2" {
@@ -784,7 +767,6 @@ function Show-UserManagementMenu {
             "5" { Reset-UserPassword }
             "6" { Remove-GateUser }
             "B" { return }
-            default { Write-Step "Invalid option." -Type Warning; Start-Sleep -Seconds 1 }
         }
     }
 }

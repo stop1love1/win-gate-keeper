@@ -360,19 +360,16 @@ function Invoke-FactoryReset {
 
 function Show-ResetMenu {
     while ($true) {
-        Clear-Host
-        Write-MenuHeader "System Reset"
-        Write-Host ""
-        Write-Host "  WARNING: These operations are DESTRUCTIVE!" -ForegroundColor Red
-        Write-Host ""
-        Write-MenuOption "1" "Clear User Data Only (keep users)"
-        Write-MenuOption "2" "Remove All Users + Data"
-        Write-MenuOption "3" "Full Factory Reset"
-        Write-Separator
-        Write-MenuOption "B" "Back to Main Menu"
-
-        $choice = Read-MenuChoice
-
+        $choice = Select-MenuOption -Title "System Reset" -BeforeRender {
+            Write-Host ""
+            Write-Host "  WARNING: These operations are DESTRUCTIVE!" -ForegroundColor Red
+        } -Items @(
+            @{ Key = "1"; Label = "Clear User Data Only (keep users)" }
+            @{ Key = "2"; Label = "Remove All Users + Data" }
+            @{ Key = "3"; Label = "Full Factory Reset" }
+            @{ Separator = $true }
+            @{ Key = "B"; Label = "Back to Main Menu" }
+        )
         switch ($choice) {
             "1" {
                 $settings = Get-Settings
