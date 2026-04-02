@@ -20,6 +20,7 @@ Import-Module "$modulePath\Doctor.psm1" -Force
 Import-Module "$modulePath\SystemReset.psm1" -Force
 Import-Module "$modulePath\SSHHardening.psm1" -Force
 Import-Module "$modulePath\RDPManager.psm1" -Force
+Import-Module "$modulePath\AppControl.psm1" -Force
 
 $script:_statusCache = $null
 $script:_statusCacheTime = [datetime]::MinValue
@@ -86,8 +87,9 @@ function Show-MainMenu {
             @{ Key = "4"; Label = "SFTP Configuration"; Status = $st.SFTP }
             @{ Key = "5"; Label = "SSH Security & Sessions" }
             @{ Key = "6"; Label = "Remote Desktop (RDP)"; Status = $st.RDP }
+            @{ Key = "7"; Label = "Application Control" }
             @{ Separator = $true }
-            @{ Key = "7"; Label = "Audit & Logging"; Status = $st.Audit }
+            @{ Key = "8"; Label = "Audit & Logging"; Status = $st.Audit }
             @{ Key = "S"; Label = "System Status Overview" }
             @{ Key = "D"; Label = "Doctor (Health Check & Auto-Fix)" }
             @{ Separator = $true }
@@ -106,7 +108,8 @@ function Show-MainMenu {
             "4" { Show-SFTPMenu; $script:_statusCache = $null }
             "5" { Show-SSHSecurityMenu; $script:_statusCache = $null }
             "6" { Show-RDPMenu; $script:_statusCache = $null }
-            "7" { Show-AuditMenu; $script:_statusCache = $null }
+            "7" { Show-AppControlMenu; $script:_statusCache = $null }
+            "8" { Show-AuditMenu; $script:_statusCache = $null }
             "S" { Show-SystemOverview }
             "D" { Show-DoctorMenu; $script:_statusCache = $null }
             "C" { Edit-Configuration; $script:_statusCache = $null }
