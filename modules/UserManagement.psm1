@@ -4,6 +4,55 @@
 
 Import-Module "$PSScriptRoot\Utils.psm1" -Force
 
+function Test-PasswordPolicy {
+    param(
+        [System.Security.SecureString]$SecurePassword,
+        [string]$Username
+    )
+
+    $settings = Get-Settings
+    $policy = if ($settings -and $settings.PasswordPolicy) { $settings.PasswordPolicy } else { $null }
+    $minLen = if ($policy -and $policy.MinLength) { $policy.MinLength } else { 8 }
+    $reqUpper = if ($policy) { $policy.RequireUppercase } else { $true }
+    $reqLower = if ($policy) { $policy.RequireLowercase } else { $true }
+    $reqDigit = if ($policy) { $policy.RequireDigit } else { $true }
+    $reqSpecial = if ($policy) { $policy.RequireSpecialChar } else { $false }
+
+    # Convert SecureString to check policy
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
+    try {
+        $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+    }
+    finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    }
+
+    $errors = @()
+
+    if ($plain.Length -lt $minLen) {
+        $errors += "Must be at least $minLen characters"
+    }
+    if ($reqUpper -and $plain -cnotmatch '[A-Z]') {
+        $errors += "Must contain at least one uppercase letter"
+    }
+    if ($reqLower -and $plain -cnotmatch '[a-z]') {
+        $errors += "Must contain at least one lowercase letter"
+    }
+    if ($reqDigit -and $plain -notmatch '\d') {
+        $errors += "Must contain at least one digit"
+    }
+    if ($reqSpecial -and $plain -notmatch '[!@#$%^&*()_+\-=\[\]{}|;:,.<>?/~`]') {
+        $errors += "Must contain at least one special character"
+    }
+    if ($Username -and $plain -eq $Username) {
+        $errors += "Password cannot be the same as username"
+    }
+
+    $plain = $null
+
+    return $errors
+}
+
 function New-GateUser {
     Write-MenuHeader "Create New User"
 
@@ -59,6 +108,28 @@ function New-GateUser {
     }
     $isSFTPOnly = ($typeChoice -eq "1")
 
+    # Account expiry (optional)
+    Write-Host ""
+    Write-Host "  Set account expiry date? (leave empty for no expiry): " -ForegroundColor White -NoNewline
+    $expiryInput = (Read-Host).Trim()
+    $accountExpires = $null
+    if ($expiryInput) {
+        try {
+            $accountExpires = [datetime]::ParseExact($expiryInput, @("yyyy-MM-dd", "dd/MM/yyyy", "MM/dd/yyyy"), $null)
+            if ($accountExpires -le (Get-Date)) {
+                Write-Step "Expiry date must be in the future." -Type Error
+                Pause-Menu
+                return
+            }
+            Write-Step "Account will expire on: $($accountExpires.ToString('yyyy-MM-dd'))" -Type Info
+        }
+        catch {
+            Write-Step "Invalid date format. Use yyyy-MM-dd format." -Type Error
+            Pause-Menu
+            return
+        }
+    }
+
     # Password with confirmation
     Write-Host ""
     Write-Host "  Enter password: " -ForegroundColor White -NoNewline
@@ -66,16 +137,30 @@ function New-GateUser {
     Write-Host "  Confirm password: " -ForegroundColor White -NoNewline
     $confirmPass = Read-Host -AsSecureString
 
-    $p1 = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-        [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePass))
-    $p2 = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-        [Runtime.InteropServices.Marshal]::SecureStringToBSTR($confirmPass))
-    $matched = ($p1 -eq $p2)
-    $p1 = $null; $p2 = $null
-    [GC]::Collect()
+    $bstr1 = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePass)
+    $bstr2 = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($confirmPass)
+    try {
+        $matched = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr1) -ceq `
+                   [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr2)
+    }
+    finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr1)
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr2)
+    }
 
     if (-not $matched) {
         Write-Step "Passwords do not match." -Type Error
+        Pause-Menu
+        return
+    }
+
+    # Password policy check
+    $policyErrors = Test-PasswordPolicy -SecurePassword $securePass -Username $username
+    if ($policyErrors.Count -gt 0) {
+        Write-Step "Password does not meet policy requirements:" -Type Error
+        foreach ($err in $policyErrors) {
+            Write-Host "    - $err" -ForegroundColor Red
+        }
         Pause-Menu
         return
     }
@@ -94,7 +179,12 @@ function New-GateUser {
             Password             = $securePass
             PasswordNeverExpires = $false
             UserMayNotChangePassword = $false
-            AccountNeverExpires  = $true
+        }
+        if ($accountExpires) {
+            $params.AccountExpires = $accountExpires
+        }
+        else {
+            $params.AccountNeverExpires = $true
         }
         if ($fullName) { $params.FullName = $fullName }
         if ($description) { $params.Description = $description }
@@ -103,8 +193,13 @@ function New-GateUser {
         Write-Step "User '$username' created." -Type Success
 
         # Add to Users group
-        Add-LocalGroupMember -Group "Users" -Member $username -ErrorAction SilentlyContinue
-        Write-Step "Added to 'Users' group." -Type Success
+        try {
+            Add-LocalGroupMember -Group "Users" -Member $username -ErrorAction Stop
+            Write-Step "Added to 'Users' group." -Type Success
+        }
+        catch {
+            Write-Step "Warning: Failed to add to 'Users' group: $_" -Type Warning
+        }
 
         # SFTP-only group
         if ($isSFTPOnly) {
@@ -229,17 +324,19 @@ function Remove-GateUser {
         return
     }
 
+    $userDir = Join-Path $settings.UsersRoot $username
+    $removeDir = $false
+    if (Test-Path $userDir) {
+        $removeDir = Confirm-Action "Also remove user directory '$userDir'?"
+    }
+
     try {
         Remove-LocalUser -Name $username
         Write-Step "User '$username' removed." -Type Success
 
-        $removeDir = Confirm-Action "Also remove user directory?"
         if ($removeDir) {
-            $userDir = Join-Path $settings.UsersRoot $username
-            if (Test-Path $userDir) {
-                Remove-Item -Path $userDir -Recurse -Force
-                Write-Step "Directory removed: $userDir" -Type Success
-            }
+            Remove-Item -Path $userDir -Recurse -Force
+            Write-Step "Directory removed: $userDir" -Type Success
         }
 
         Write-Log "User '$username' removed. Directory removed: $removeDir"
@@ -291,6 +388,265 @@ function Show-UserList {
         Write-Host "$typeStr " -ForegroundColor Cyan -NoNewline
         Write-Host "$status" -ForegroundColor $statusColor
     }
+}
+
+function Show-UserDetail {
+    Write-MenuHeader "User Detail"
+
+    $settings = Get-Settings
+    if (-not $settings) { Pause-Menu; return }
+
+    Show-UserList
+
+    Write-Host ""
+    Write-Host "  Enter username to view: " -ForegroundColor White -NoNewline
+    $username = (Read-Host).Trim()
+
+    $user = Get-LocalUser -Name $username -ErrorAction SilentlyContinue
+    if (-not $user) {
+        Write-Step "User '$username' not found." -Type Error
+        Pause-Menu
+        return
+    }
+
+    Clear-Host
+    Write-MenuHeader "User Detail: $username"
+
+    # === Basic Info ===
+    Write-Host ""
+    Write-Host "  Account Information:" -ForegroundColor White
+    Write-Host ("  " + "-" * 56) -ForegroundColor DarkGray
+    Write-Host "  Username:          $($user.Name)" -ForegroundColor Cyan
+    Write-Host "  Full Name:         $(if ($user.FullName) { $user.FullName } else { '(not set)' })" -ForegroundColor Cyan
+    Write-Host "  Description:       $(if ($user.Description) { $user.Description } else { '(not set)' })" -ForegroundColor Cyan
+    Write-Host "  SID:               $($user.SID)" -ForegroundColor DarkGray
+
+    # === Status ===
+    Write-Host ""
+    Write-Host "  Account Status:" -ForegroundColor White
+    Write-Host ("  " + "-" * 56) -ForegroundColor DarkGray
+    Write-Host "  Enabled:           " -NoNewline
+    if ($user.Enabled) { Write-Host "Yes" -ForegroundColor Green }
+    else { Write-Host "No (DISABLED)" -ForegroundColor Red }
+
+    Write-Host "  Account Expires:   " -NoNewline
+    if ($user.AccountExpires) { Write-Host "$($user.AccountExpires.ToString('yyyy-MM-dd HH:mm:ss'))" -ForegroundColor Yellow }
+    else { Write-Host "Never" -ForegroundColor Green }
+
+    Write-Host "  Password Last Set: " -NoNewline
+    if ($user.PasswordLastSet) { Write-Host "$($user.PasswordLastSet.ToString('yyyy-MM-dd HH:mm:ss'))" -ForegroundColor Cyan }
+    else { Write-Host "Never" -ForegroundColor Yellow }
+
+    Write-Host "  Password Expires:  " -NoNewline
+    if ($user.PasswordExpires) { Write-Host "$($user.PasswordExpires.ToString('yyyy-MM-dd HH:mm:ss'))" -ForegroundColor Cyan }
+    else { Write-Host "Never" -ForegroundColor DarkGray }
+
+    Write-Host "  Last Logon:        " -NoNewline
+    if ($user.LastLogon) { Write-Host "$($user.LastLogon.ToString('yyyy-MM-dd HH:mm:ss'))" -ForegroundColor Cyan }
+    else { Write-Host "Never logged in" -ForegroundColor DarkGray }
+
+    # === Group Membership ===
+    Write-Host ""
+    Write-Host "  Group Membership:" -ForegroundColor White
+    Write-Host ("  " + "-" * 56) -ForegroundColor DarkGray
+
+    $sftpGroup = $settings.SFTPOnlyGroup
+    $isSFTP = $false
+    $groups = @()
+    try {
+        $allGroups = Get-LocalGroup -ErrorAction SilentlyContinue
+        foreach ($grp in $allGroups) {
+            $members = Get-LocalGroupMember -Group $grp.Name -ErrorAction SilentlyContinue
+            if ($members.Name -like "*\$username") {
+                $groups += $grp.Name
+                if ($grp.Name -eq $sftpGroup) { $isSFTP = $true }
+            }
+        }
+    }
+    catch {}
+
+    Write-Host "  User Type:         " -NoNewline
+    if ($isSFTP) { Write-Host "SFTP-only (restricted)" -ForegroundColor Yellow }
+    else { Write-Host "Shell (SSH + SFTP)" -ForegroundColor Cyan }
+
+    if ($groups.Count -gt 0) {
+        foreach ($grp in $groups) {
+            $color = if ($grp -eq $sftpGroup) { "Yellow" } else { "White" }
+            Write-Host "  - $grp" -ForegroundColor $color
+        }
+    }
+    else {
+        Write-Host "  (no groups)" -ForegroundColor DarkGray
+    }
+
+    # === Directory Info ===
+    Write-Host ""
+    Write-Host "  Directory & Storage:" -ForegroundColor White
+    Write-Host ("  " + "-" * 56) -ForegroundColor DarkGray
+
+    $userDir = Join-Path $settings.UsersRoot $username
+    Write-Host "  Home Directory:    $userDir" -ForegroundColor Cyan
+    Write-Host "  Directory Exists:  " -NoNewline
+    if (Test-Path $userDir) {
+        Write-Host "Yes" -ForegroundColor Green
+
+        # Calculate size
+        $files = Get-ChildItem -Path $userDir -Recurse -File -ErrorAction SilentlyContinue
+        $fileCount = @($files).Count
+        $totalSize = ($files | Measure-Object -Property Length -Sum).Sum
+        if (-not $totalSize) { $totalSize = 0 }
+        $sizeStr = if ($totalSize -gt 1GB) { "{0:N2} GB" -f ($totalSize / 1GB) }
+                   elseif ($totalSize -gt 1MB) { "{0:N2} MB" -f ($totalSize / 1MB) }
+                   elseif ($totalSize -gt 1KB) { "{0:N2} KB" -f ($totalSize / 1KB) }
+                   else { "$totalSize B" }
+
+        Write-Host "  Total Files:       $fileCount" -ForegroundColor Cyan
+        Write-Host "  Total Size:        $sizeStr" -ForegroundColor Cyan
+
+        # Show subdirectories
+        $subDirs = Get-ChildItem -Path $userDir -Directory -ErrorAction SilentlyContinue
+        if ($subDirs) {
+            Write-Host "  Subdirectories:    $($subDirs.Count)" -ForegroundColor Cyan
+            foreach ($sub in $subDirs | Select-Object -First 10) {
+                Write-Host "    /$($sub.Name)" -ForegroundColor DarkGray
+            }
+            if ($subDirs.Count -gt 10) {
+                Write-Host "    ... and $($subDirs.Count - 10) more" -ForegroundColor DarkGray
+            }
+        }
+
+        # NTFS permissions
+        Write-Host ""
+        Write-Host "  NTFS Permissions:" -ForegroundColor White
+        Write-Host ("  " + "-" * 56) -ForegroundColor DarkGray
+        try {
+            $acl = Get-Acl $userDir
+            Write-Host "  Owner:             $($acl.Owner)" -ForegroundColor Cyan
+            Write-Host "  Inheritance:       " -NoNewline
+            if ($acl.AreAccessRulesProtected) { Write-Host "Blocked (isolated)" -ForegroundColor Green }
+            else { Write-Host "Inherited" -ForegroundColor Yellow }
+
+            foreach ($rule in $acl.Access) {
+                $identity = $rule.IdentityReference.Value
+                $rights = $rule.FileSystemRights
+                $type = $rule.AccessControlType
+                $color = if ($type -eq "Allow") { "White" } else { "Red" }
+                Write-Host "  $type  " -ForegroundColor $color -NoNewline
+                Write-Host "$identity" -ForegroundColor Cyan -NoNewline
+                Write-Host " -> $rights" -ForegroundColor DarkGray
+            }
+        }
+        catch {
+            Write-Step "Cannot read permissions: $_" -Type Warning
+        }
+    }
+    else {
+        Write-Host "No (MISSING)" -ForegroundColor Red
+    }
+
+    # === Recent Login Activity ===
+    Write-Host ""
+    Write-Host "  Recent Login Activity (last 10):" -ForegroundColor White
+    Write-Host ("  " + "-" * 56) -ForegroundColor DarkGray
+
+    try {
+        $events = Get-WinEvent -FilterHashtable @{
+            LogName = 'Security'
+            Id = 4624, 4625
+        } -MaxEvents 200 -ErrorAction SilentlyContinue
+
+        $userEvents = @()
+        foreach ($event in $events) {
+            $xml = [xml]$event.ToXml()
+            $data = @{}
+            foreach ($d in $xml.Event.EventData.Data) {
+                $data[$d.Name] = $d.'#text'
+            }
+            if ($data['TargetUserName'] -eq $username) {
+                $userEvents += @{
+                    Time = $event.TimeCreated
+                    Type = if ($event.Id -eq 4624) { "Login" } else { "FAILED" }
+                    IP   = if ($data['IpAddress']) { $data['IpAddress'] } else { "-" }
+                }
+            }
+        }
+
+        if ($userEvents.Count -gt 0) {
+            foreach ($evt in $userEvents | Select-Object -First 10) {
+                $time = $evt.Time.ToString("yyyy-MM-dd HH:mm:ss")
+                $typeColor = if ($evt.Type -eq "Login") { "Green" } else { "Red" }
+                Write-Host "  $time  " -NoNewline
+                Write-Host "$($evt.Type.PadRight(8))" -ForegroundColor $typeColor -NoNewline
+                Write-Host "from $($evt.IP)" -ForegroundColor Cyan
+            }
+        }
+        else {
+            Write-Host "  (no login events found)" -ForegroundColor DarkGray
+        }
+    }
+    catch {
+        Write-Host "  (cannot read Security Event Log)" -ForegroundColor DarkGray
+    }
+
+    # === Recent File Activity ===
+    Write-Host ""
+    Write-Host "  Recent File Activity (last 10):" -ForegroundColor White
+    Write-Host ("  " + "-" * 56) -ForegroundColor DarkGray
+
+    try {
+        $fileEvents = Get-WinEvent -FilterHashtable @{
+            LogName = 'Security'
+            Id = 4663
+        } -MaxEvents 200 -ErrorAction SilentlyContinue
+
+        $userFileEvents = @()
+        foreach ($event in $fileEvents) {
+            $xml = [xml]$event.ToXml()
+            $data = @{}
+            foreach ($d in $xml.Event.EventData.Data) {
+                $data[$d.Name] = $d.'#text'
+            }
+            if ($data['SubjectUserName'] -eq $username) {
+                $objectName = $data['ObjectName']
+                if ($objectName -and $objectName -like "$($settings.BasePath)*") {
+                    $accessMask = $data['AccessMask']
+                    $action = switch ($accessMask) {
+                        "0x2"     { "Write" }
+                        "0x1"     { "Read" }
+                        "0x10000" { "Delete" }
+                        "0x6"     { "Write" }
+                        default   { "Access" }
+                    }
+                    $shortPath = $objectName.Replace($settings.BasePath, "~")
+                    $userFileEvents += @{
+                        Time   = $event.TimeCreated
+                        Action = $action
+                        Path   = $shortPath
+                    }
+                }
+            }
+        }
+
+        if ($userFileEvents.Count -gt 0) {
+            foreach ($evt in $userFileEvents | Select-Object -First 10) {
+                $time = $evt.Time.ToString("yyyy-MM-dd HH:mm:ss")
+                $path = $evt.Path
+                if ($path.Length -gt 35) { $path = "..." + $path.Substring($path.Length - 32) }
+                Write-Host "  $time  " -NoNewline
+                Write-Host "$($evt.Action.PadRight(8))" -ForegroundColor Yellow -NoNewline
+                Write-Host "$path" -ForegroundColor DarkGray
+            }
+        }
+        else {
+            Write-Host "  (no file activity found)" -ForegroundColor DarkGray
+        }
+    }
+    catch {
+        Write-Host "  (cannot read Security Event Log)" -ForegroundColor DarkGray
+    }
+
+    Write-Host ""
+    Pause-Menu
 }
 
 function Enable-DisableUser {
@@ -360,16 +716,30 @@ function Reset-UserPassword {
     Write-Host "  Confirm password: " -ForegroundColor White -NoNewline
     $confirmPass = Read-Host -AsSecureString
 
-    $p1 = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-        [Runtime.InteropServices.Marshal]::SecureStringToBSTR($newPass))
-    $p2 = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-        [Runtime.InteropServices.Marshal]::SecureStringToBSTR($confirmPass))
-    $matched = ($p1 -eq $p2)
-    $p1 = $null; $p2 = $null
-    [GC]::Collect()
+    $bstr1 = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($newPass)
+    $bstr2 = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($confirmPass)
+    try {
+        $matched = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr1) -ceq `
+                   [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr2)
+    }
+    finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr1)
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr2)
+    }
 
     if (-not $matched) {
         Write-Step "Passwords do not match." -Type Error
+        Pause-Menu
+        return
+    }
+
+    # Password policy check
+    $policyErrors = Test-PasswordPolicy -SecurePassword $newPass -Username $username
+    if ($policyErrors.Count -gt 0) {
+        Write-Step "Password does not meet policy requirements:" -Type Error
+        foreach ($err in $policyErrors) {
+            Write-Host "    - $err" -ForegroundColor Red
+        }
         Pause-Menu
         return
     }
@@ -393,9 +763,10 @@ function Show-UserManagementMenu {
         Write-Host ""
         Write-MenuOption "1" "Create New User"
         Write-MenuOption "2" "List Users"
-        Write-MenuOption "3" "Enable/Disable User"
-        Write-MenuOption "4" "Reset User Password"
-        Write-MenuOption "5" "Remove User"
+        Write-MenuOption "3" "View User Detail"
+        Write-MenuOption "4" "Enable/Disable User"
+        Write-MenuOption "5" "Reset User Password"
+        Write-MenuOption "6" "Remove User"
         Write-Separator
         Write-MenuOption "B" "Back to Main Menu"
 
@@ -408,9 +779,10 @@ function Show-UserManagementMenu {
                 Show-UserList
                 Pause-Menu
             }
-            "3" { Enable-DisableUser }
-            "4" { Reset-UserPassword }
-            "5" { Remove-GateUser }
+            "3" { Show-UserDetail }
+            "4" { Enable-DisableUser }
+            "5" { Reset-UserPassword }
+            "6" { Remove-GateUser }
             "B" { return }
             default { Write-Step "Invalid option." -Type Warning; Start-Sleep -Seconds 1 }
         }

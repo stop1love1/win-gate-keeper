@@ -31,7 +31,7 @@ function Set-SFTPChrootConfig {
 
     $content = Get-Content $sshdConfig -Raw
 
-    # SFTP subsystem configuration
+    # SFTP subsystem (Windows OpenSSH does not support -l flag on sftp-server.exe)
     $sftpSubsystem = "Subsystem sftp sftp-server.exe"
 
     # Check and update subsystem line
@@ -48,6 +48,9 @@ function Set-SFTPChrootConfig {
     $sftpGroup = $settings.SFTPOnlyGroup
     $chrootDir = $settings.UsersRoot
 
+    # Windows OpenSSH does not support %u/%h tokens in ChrootDirectory.
+    # Per-user isolation is enforced via NTFS ACLs on each user subdirectory.
+    # ChrootDirectory points to UsersRoot; each user only sees their own folder.
     $matchBlock = @"
 
 # BEGIN WinGateKeeper SFTP Configuration
@@ -86,9 +89,9 @@ Match Group $sftpGroup
     }
     $content = ($cleanedLines -join "`r`n").TrimEnd() + "`r`n" + $matchBlock + "`r`n"
 
-    # Write to temp file and validate before applying
+    # Write to temp file (BOM-free UTF-8, required by OpenSSH) and validate before applying
     $tempConfig = "$sshdConfig.tmp"
-    Set-Content -Path $tempConfig -Value $content -Encoding UTF8
+    [System.IO.File]::WriteAllText($tempConfig, $content, [System.Text.UTF8Encoding]::new($false))
 
     # Validate sshd config syntax
     $sshdExe = Get-Command sshd.exe -ErrorAction SilentlyContinue
@@ -207,7 +210,7 @@ function Test-SFTPAccess {
     if (Test-Path $sshdConfig) {
         $content = Get-Content $sshdConfig -Raw
         Write-Host "  SFTP chroot configured    " -NoNewline
-        if ($content -match "Match Group $sftpGroup") {
+        if ($content -match [regex]::Escape("Match Group $sftpGroup")) {
             Write-Host "PASS" -ForegroundColor Green
         }
         else {

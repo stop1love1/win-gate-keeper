@@ -17,15 +17,18 @@ function Enable-FileAudit {
 
     # Enable success and failure auditing for Object Access
     $auditCmds = @(
-        @{ Name = "File System";        Args = '/subcategory:"File System" /success:enable /failure:enable' },
-        @{ Name = "Logon";              Args = '/subcategory:"Logon" /success:enable /failure:enable' },
-        @{ Name = "Logoff";             Args = '/subcategory:"Logoff" /success:enable' },
-        @{ Name = "Handle Manipulation"; Args = '/subcategory:"Handle Manipulation" /success:enable' },
-        @{ Name = "File Share";         Args = '/subcategory:"File Share" /success:enable /failure:enable' }
+        @{ Name = "File System";        Subcategory = "File System";        Success = $true; Failure = $true },
+        @{ Name = "Logon";              Subcategory = "Logon";              Success = $true; Failure = $true },
+        @{ Name = "Logoff";             Subcategory = "Logoff";             Success = $true; Failure = $false },
+        @{ Name = "Handle Manipulation"; Subcategory = "Handle Manipulation"; Success = $true; Failure = $false },
+        @{ Name = "File Share";         Subcategory = "File Share";         Success = $true; Failure = $true }
     )
 
     foreach ($cmd in $auditCmds) {
-        $result = cmd /c "auditpol /set $($cmd.Args) 2>&1"
+        $args = @("/set", "/subcategory:$($cmd.Subcategory)")
+        if ($cmd.Success) { $args += "/success:enable" }
+        if ($cmd.Failure) { $args += "/failure:enable" }
+        $result = & auditpol @args 2>&1
         if ($LASTEXITCODE -eq 0) {
             Write-Step "$($cmd.Name) auditing enabled." -Type Success
         }
@@ -292,7 +295,7 @@ function Show-RecentLoginEvents {
             return
         }
 
-        Write-Host "  Time                   Event    User                     Source IP" -ForegroundColor White
+        Write-Host "  Time                   Event    User                                 Source IP" -ForegroundColor White
         Write-Separator
 
         foreach ($event in $events) {
@@ -313,12 +316,12 @@ function Show-RecentLoginEvents {
             if ($targetUser -match '\$$') { continue }
 
             $user = "$targetDomain\$targetUser"
-            if ($user.Length -gt 24) { $user = $user.Substring(0, 21) + "..." }
+            if ($user.Length -gt 36) { $user = $user.Substring(0, 33) + "..." }
             $sourceIP = if ($data['IpAddress']) { $data['IpAddress'] } else { "-" }
 
             Write-Host "  $time  " -NoNewline
             Write-Host "$($type.PadRight(8))" -ForegroundColor $typeColor -NoNewline
-            Write-Host "$($user.PadRight(24)) " -NoNewline
+            Write-Host "$($user.PadRight(36)) " -NoNewline
             Write-Host "$sourceIP" -ForegroundColor Cyan
         }
     }

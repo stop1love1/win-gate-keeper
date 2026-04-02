@@ -16,6 +16,9 @@ Import-Module "$modulePath\DirectorySetup.psm1" -Force
 Import-Module "$modulePath\SFTPConfig.psm1" -Force
 Import-Module "$modulePath\AuditLogging.psm1" -Force
 Import-Module "$modulePath\StatusOverview.psm1" -Force
+Import-Module "$modulePath\Doctor.psm1" -Force
+Import-Module "$modulePath\SystemReset.psm1" -Force
+Import-Module "$modulePath\SSHHardening.psm1" -Force
 
 $script:_statusCache = $null
 $script:_statusCacheTime = [datetime]::MinValue
@@ -82,8 +85,11 @@ function Show-MainMenu {
         Write-MenuOption "3" "Directory & Permissions" -Status $st.Dirs
         Write-MenuOption "4" "SFTP Configuration" -Status $st.SFTP
         Write-MenuOption "5" "Audit & Logging" -Status $st.Audit
+        Write-MenuOption "6" "SSH Security & Sessions"
         Write-Separator
         Write-MenuOption "S" "System Status Overview"
+        Write-MenuOption "D" "Doctor (Health Check & Auto-Fix)"
+        Write-MenuOption "R" "System Reset / Clear Data"
         Write-MenuOption "C" "Edit Configuration"
         Write-MenuOption "A" "About / Author"
         Write-Separator
@@ -98,7 +104,10 @@ function Show-MainMenu {
             "3" { Show-DirectoryMenu; $script:_statusCache = $null }
             "4" { Show-SFTPMenu; $script:_statusCache = $null }
             "5" { Show-AuditMenu; $script:_statusCache = $null }
+            "6" { Show-SSHSecurityMenu; $script:_statusCache = $null }
             "S" { Show-SystemOverview }
+            "D" { Show-DoctorMenu; $script:_statusCache = $null }
+            "R" { Show-ResetMenu; $script:_statusCache = $null }
             "C" { Edit-Configuration; $script:_statusCache = $null }
             "A" { Show-AuthorInfo }
             "Q" {
@@ -137,11 +146,11 @@ function Show-AuthorInfo {
         switch ($choice) {
             "1" {
                 try {
-                    Start-Process $repoUrl
+                    Start-Process $repoUrl -ErrorAction Stop
                     Write-Step "Link opened in your default browser." -Type Info
                 }
                 catch {
-                    Write-Step "Could not open browser: $_" -Type Error
+                    Write-Step "Could not open browser. Visit manually: $repoUrl" -Type Warning
                 }
                 Pause-Menu
             }
@@ -157,13 +166,9 @@ function Show-AuthorInfo {
 function Edit-Configuration {
     Write-MenuHeader "Edit Configuration"
 
+    $settings = Get-Settings
+    if (-not $settings) { Pause-Menu; return }
     $settingsPath = Join-Path $PSScriptRoot "config\settings.json"
-    if (-not (Test-Path $settingsPath)) {
-        Write-Step "Settings file not found at $settingsPath" -Type Error
-        Pause-Menu
-        return
-    }
-    $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
 
     Write-Host ""
     Write-Host "  Current Configuration:" -ForegroundColor White
@@ -223,6 +228,9 @@ function Edit-Configuration {
 }
 
 # Entry point - require Administrator
+# Run log rotation on startup (clean old logs silently)
+try { Invoke-LogRotation } catch {}
+
 if (-not (Test-IsAdmin)) {
     Write-Banner
     Write-Host ""

@@ -5,10 +5,15 @@
 Import-Module "$PSScriptRoot\Utils.psm1" -Force
 
 function Test-OpenSSHInstalled {
+    # Check via Windows Capability (Server 2019+, Win10+)
     $sshServer = Get-WindowsCapability -Online -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "OpenSSH.Server*" }
     if ($sshServer -and $sshServer.State -eq "Installed") {
         return $true
     }
+    # Fallback: check binary + service (Server 2016 / manual install)
+    $sshdExe = Get-Command sshd.exe -ErrorAction SilentlyContinue
+    $sshdSvc = Get-Service -Name sshd -ErrorAction SilentlyContinue
+    if ($sshdExe -and $sshdSvc) { return $true }
     return $false
 }
 
@@ -33,16 +38,10 @@ function Install-OpenSSHServer {
     Write-Step "Checking OpenSSH Server status..." -Type Info
     $capability = Get-WindowsCapability -Online -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "OpenSSH.Server*" }
 
-    if (-not $capability) {
-        Write-Step "OpenSSH Server capability not found on this system." -Type Error
-        Pause-Menu
-        return
+    if ($capability -and $capability.State -eq "Installed") {
+        Write-Step "OpenSSH Server is already installed (Windows Capability)." -Type Success
     }
-
-    if ($capability.State -eq "Installed") {
-        Write-Step "OpenSSH Server is already installed." -Type Success
-    }
-    else {
+    elseif ($capability) {
         Write-Step "Installing OpenSSH Server..." -Type Info
         try {
             Add-WindowsCapability -Online -Name $capability.Name
@@ -52,6 +51,19 @@ function Install-OpenSSHServer {
         catch {
             Write-Step "Failed to install OpenSSH Server: $_" -Type Error
             Write-Log "OpenSSH Server installation failed: $_" -Level "ERROR"
+            Pause-Menu
+            return
+        }
+    }
+    else {
+        # Fallback: check if OpenSSH is manually installed (Server 2016)
+        $sshdExe = Get-Command sshd.exe -ErrorAction SilentlyContinue
+        $sshdSvc = Get-Service -Name sshd -ErrorAction SilentlyContinue
+        if ($sshdExe -or $sshdSvc) {
+            Write-Step "OpenSSH Server detected (manual/legacy install)." -Type Success
+        }
+        else {
+            Write-Step "OpenSSH Server not found. On Server 2016, install manually from github.com/PowerShell/Win32-OpenSSH." -Type Error
             Pause-Menu
             return
         }

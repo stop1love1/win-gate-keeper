@@ -7,6 +7,7 @@ Import-Module "$PSScriptRoot\DirectorySetup.psm1" -Force
 Import-Module "$PSScriptRoot\OpenSSHSetup.psm1" -Force
 Import-Module "$PSScriptRoot\SFTPConfig.psm1" -Force
 Import-Module "$PSScriptRoot\AuditLogging.psm1" -Force
+Import-Module "$PSScriptRoot\SSHHardening.psm1" -Force
 
 function Show-SystemOverview {
     Write-MenuHeader "WinGateKeeper System Overview"
@@ -139,8 +140,8 @@ function Show-SystemOverview {
     $sessionCount = if ($sshSessions.Count -gt 1) { $sshSessions.Count - 1 } else { 0 }
     if ($sessionCount -gt 0) {
         Write-Host "  Active connections: $sessionCount" -ForegroundColor Yellow
-        # Show logged-in users via query
-        $quser = quser 2>$null
+        # Show logged-in users via query (not available on Server Core)
+        $quser = if (Get-Command quser -ErrorAction SilentlyContinue) { quser 2>$null } else { $null }
         if ($quser) {
             foreach ($line in ($quser | Select-Object -Skip 1)) {
                 $trimmed = $line.Trim()
@@ -176,9 +177,10 @@ function Start-QuickSetup {
     Write-Host "  Step 1: Initialize base directories" -ForegroundColor White
     Write-Host "  Step 2: Install & configure OpenSSH Server" -ForegroundColor White
     Write-Host "  Step 3: Configure SFTP chroot jail" -ForegroundColor White
-    Write-Host "  Step 4: Enable audit policies" -ForegroundColor White
-    Write-Host "  Step 5: Enable PowerShell logging" -ForegroundColor White
-    Write-Host "  Step 6: Enable directory auditing" -ForegroundColor White
+    Write-Host "  Step 4: Apply SSH security hardening" -ForegroundColor White
+    Write-Host "  Step 5: Enable audit policies" -ForegroundColor White
+    Write-Host "  Step 6: Enable PowerShell logging" -ForegroundColor White
+    Write-Host "  Step 7: Enable directory auditing" -ForegroundColor White
 
     $settings = Get-Settings
     if (-not $settings) { Pause-Menu; return }
@@ -194,7 +196,7 @@ function Start-QuickSetup {
 
     # Step 1: Initialize directories
     Write-Host ""
-    Write-Step "STEP 1/6: Initializing directories..." -Type Info
+    Write-Step "STEP 1/7: Initializing directories..." -Type Info
     try {
         Initialize-BaseDirectoriesCore -Settings $settings
         Write-Step "Directories initialized." -Type Success
@@ -205,7 +207,7 @@ function Start-QuickSetup {
 
     # Step 2: Install & configure OpenSSH
     Write-Host ""
-    Write-Step "STEP 2/6: Installing OpenSSH Server..." -Type Info
+    Write-Step "STEP 2/7: Installing OpenSSH Server..." -Type Info
     try {
         Install-OpenSSHServerCore -Settings $settings
         Write-Step "OpenSSH Server configured." -Type Success
@@ -216,7 +218,7 @@ function Start-QuickSetup {
 
     # Step 3: Configure SFTP chroot
     Write-Host ""
-    Write-Step "STEP 3/6: Configuring SFTP chroot..." -Type Info
+    Write-Step "STEP 3/7: Configuring SFTP chroot..." -Type Info
     try {
         Set-SFTPChrootConfigCore -Settings $settings
         Write-Step "SFTP chroot configured." -Type Success
@@ -225,9 +227,43 @@ function Start-QuickSetup {
         Write-Step "Failed to configure SFTP chroot: $_" -Type Error
     }
 
-    # Step 4: Enable audit policies
+    # Step 4: Apply SSH hardening
     Write-Host ""
-    Write-Step "STEP 4/6: Enabling audit policies..." -Type Info
+    Write-Step "STEP 4/7: Applying SSH security hardening..." -Type Info
+    try {
+        $sshdConfig = $settings.SSHConfigPath
+        if (Test-Path $sshdConfig) {
+            $content = Get-Content $sshdConfig -Raw
+            $content = Set-SSHHardening -Settings $settings -ConfigContent $content
+            [System.IO.File]::WriteAllText($sshdConfig, $content, [System.Text.UTF8Encoding]::new($false))
+
+            # Create login banner if configured
+            $ssh = $settings.SSHSecurity
+            if ($ssh -and $ssh.LoginBanner) {
+                $bannerPath = if ($ssh.BannerPath) { $ssh.BannerPath } else { "C:\ProgramData\ssh\banner.txt" }
+                if (-not (Test-Path $bannerPath)) {
+                    $hostname = $env:COMPUTERNAME
+                    $defaultBanner = "========================================================================`r`nAUTHORIZED ACCESS ONLY - All activities are logged and monitored.`r`nServer: $hostname`r`n========================================================================"
+                    $bannerDir = Split-Path $bannerPath -Parent
+                    if (-not (Test-Path $bannerDir)) { New-Item -ItemType Directory -Path $bannerDir -Force | Out-Null }
+                    [System.IO.File]::WriteAllText($bannerPath, $defaultBanner, [System.Text.UTF8Encoding]::new($false))
+                }
+            }
+
+            Restart-Service sshd -Force -ErrorAction SilentlyContinue
+            Write-Step "SSH hardening applied." -Type Success
+        }
+        else {
+            Write-Step "sshd_config not found, skipping hardening." -Type Warning
+        }
+    }
+    catch {
+        Write-Step "Failed to apply SSH hardening: $_" -Type Error
+    }
+
+    # Step 5: Enable audit policies
+    Write-Host ""
+    Write-Step "STEP 5/7: Enabling audit policies..." -Type Info
     try {
         Enable-FileAuditCore
         Write-Step "Audit policies enabled." -Type Success
@@ -236,9 +272,9 @@ function Start-QuickSetup {
         Write-Step "Failed to enable audit policies: $_" -Type Error
     }
 
-    # Step 5: Enable PowerShell logging
+    # Step 6: Enable PowerShell logging
     Write-Host ""
-    Write-Step "STEP 5/6: Enabling PowerShell logging..." -Type Info
+    Write-Step "STEP 6/7: Enabling PowerShell logging..." -Type Info
     try {
         Enable-PowerShellLoggingCore -Settings $settings
         Write-Step "PowerShell logging enabled." -Type Success
@@ -247,9 +283,9 @@ function Start-QuickSetup {
         Write-Step "Failed to enable PowerShell logging: $_" -Type Error
     }
 
-    # Step 6: Enable directory auditing
+    # Step 7: Enable directory auditing
     Write-Host ""
-    Write-Step "STEP 6/6: Enabling directory auditing..." -Type Info
+    Write-Step "STEP 7/7: Enabling directory auditing..." -Type Info
     try {
         Enable-DirectoryAuditCore -Settings $settings
         Write-Step "Directory auditing enabled." -Type Success
@@ -323,16 +359,23 @@ function Install-OpenSSHServerCore {
     param([PSCustomObject]$Settings = $null)
 
     $capability = Get-WindowsCapability -Online -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "OpenSSH.Server*" }
-    if (-not $capability) {
-        throw "OpenSSH Server capability not found on this system."
-    }
-
-    if ($capability.State -ne "Installed") {
+    if ($capability -and $capability.State -ne "Installed") {
         Add-WindowsCapability -Online -Name $capability.Name | Out-Null
         Write-Step "OpenSSH Server installed." -Type Success
     }
-    else {
+    elseif ($capability) {
         Write-Step "OpenSSH Server already installed." -Type Info
+    }
+    else {
+        # Fallback: check manual install (Server 2016)
+        $sshdExe = Get-Command sshd.exe -ErrorAction SilentlyContinue
+        if ($sshdExe) {
+            Write-Step "OpenSSH Server detected (manual install)." -Type Info
+        }
+        else {
+            Write-Step "OpenSSH Server not found. Install manually on Server 2016." -Type Warning
+            return
+        }
     }
 
     Set-Service -Name sshd -StartupType Automatic
@@ -387,7 +430,7 @@ Match Group $sftpGroup
 
         # Validate before applying
         $tempConfig = "$sshdConfig.tmp"
-        Set-Content -Path $tempConfig -Value $content -Encoding UTF8
+        [System.IO.File]::WriteAllText($tempConfig, $content, [System.Text.UTF8Encoding]::new($false))
         $sshdExe = Get-Command sshd.exe -ErrorAction SilentlyContinue
         if ($sshdExe) {
             $testResult = & sshd.exe -t -f $tempConfig 2>&1
@@ -461,6 +504,21 @@ function Enable-DirectoryAuditCore {
     if (-not $alreadyExists) {
         $acl.AddAuditRule($auditRule)
         Set-Acl -Path $usersRoot -AclObject $acl
+    }
+
+    # Apply audit rules to existing subdirectories (inheritance may be blocked)
+    $userDirs = Get-ChildItem -Path $usersRoot -Directory -ErrorAction SilentlyContinue
+    foreach ($dir in $userDirs) {
+        $dAcl = Get-Acl $dir.FullName
+        $dExisting = $dAcl.GetAuditRules($true, $false, [System.Security.Principal.NTAccount])
+        $dHasRule = $dExisting | Where-Object {
+            $_.IdentityReference.Value -eq "Everyone" -and
+            ($_.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::Modify)
+        }
+        if (-not $dHasRule) {
+            $dAcl.AddAuditRule($auditRule)
+            Set-Acl -Path $dir.FullName -AclObject $dAcl
+        }
     }
 }
 

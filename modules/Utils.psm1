@@ -142,6 +142,47 @@ function Write-Log {
     }
 }
 
+function Invoke-LogRotation {
+    $settings = Get-Settings
+    if (-not $settings) { return }
+
+    $logMgmt = $settings.LogManagement
+    $maxDays = if ($logMgmt -and $logMgmt.MaxLogAgeDays) { $logMgmt.MaxLogAgeDays } else { 90 }
+    $logDir = $settings.LogsPath
+
+    if (-not (Test-Path $logDir)) { return }
+
+    $cutoff = (Get-Date).AddDays(-$maxDays)
+    $removed = 0
+
+    # Clean old WinGateKeeper logs
+    Get-ChildItem -Path $logDir -Filter "wingatekeeper_*.log" -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -lt $cutoff } |
+        ForEach-Object {
+            Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
+            $removed++
+        }
+
+    # Clean old transcript folders
+    $transcriptPath = $settings.PowerShellLogging.TranscriptionPath
+    if ($transcriptPath -and (Test-Path $transcriptPath)) {
+        Get-ChildItem -Path $transcriptPath -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.LastWriteTime -lt $cutoff } |
+            ForEach-Object {
+                Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
+                $removed++
+            }
+        # Remove empty directories
+        Get-ChildItem -Path $transcriptPath -Directory -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { @(Get-ChildItem $_.FullName -Force -ErrorAction SilentlyContinue).Count -eq 0 } |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+    }
+
+    if ($removed -gt 0) {
+        Write-Log "Log rotation: removed $removed files older than $maxDays days."
+    }
+}
+
 function Pause-Menu {
     Write-Host ""
     Write-Host "  Press any key to continue..." -ForegroundColor DarkGray

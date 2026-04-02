@@ -6,6 +6,27 @@
     "SFTPOnlyGroup": "SFTPUsers",
     "AdminGroup": "WinGateKeeperAdmins",
     "SSHPort": 22,
+    "SSHSecurity": {
+        "MaxAuthTries": 3,
+        "ClientAliveInterval": 300,
+        "ClientAliveCountMax": 2,
+        "LoginBanner": true,
+        "BannerPath": "C:\\ProgramData\\ssh\\banner.txt",
+        "AllowedIPs": "*",
+        "IdleTimeout": 600
+    },
+    "PasswordPolicy": {
+        "MinLength": 8,
+        "RequireUppercase": true,
+        "RequireLowercase": true,
+        "RequireDigit": true,
+        "RequireSpecialChar": false
+    },
+    "LogManagement": {
+        "MaxLogAgeDays": 90,
+        "MaxLogSizeMB": 500,
+        "SecurityLogSizeMB": 256
+    },
     "PowerShellLogging": {
         "ScriptBlockLogging": true,
         "ModuleLogging": true,
