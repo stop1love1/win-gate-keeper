@@ -339,7 +339,204 @@ function Invoke-Doctor {
     }
 
     # =========================================================================
-    # 13. Settings File Integrity
+    # 13. Hyper-V Health Checks (if role installed)
+    # =========================================================================
+    $hvFeature = Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-All -ErrorAction SilentlyContinue
+    if ($hvFeature -and $hvFeature.State -eq 'Enabled') {
+
+        # 13a. vmms service
+        Write-Host "  Hyper-V Service (vmms)           " -NoNewline
+        $vmmsSvc = Get-Service -Name vmms -ErrorAction SilentlyContinue
+        if ($vmmsSvc -and $vmmsSvc.Status -eq 'Running') {
+            Write-Host "OK (Running)" -ForegroundColor Green
+            $passed++
+        }
+        elseif ($vmmsSvc) {
+            Write-Host "STOPPED" -ForegroundColor Yellow
+            $issues += @{ Name = "Hyper-V vmms"; Issue = "Service not running"; CanFix = $true }
+            $failed++
+            if ($AutoFix) {
+                Write-Step "Auto-starting vmms service..." -Type Info
+                try {
+                    Set-Service -Name vmms -StartupType Automatic
+                    Start-Service vmms
+                    Write-Step "vmms service started." -Type Success
+                    Write-Log "Doctor: Auto-started vmms service."
+                }
+                catch { Write-Step "Failed to start vmms: $_" -Type Error }
+            }
+        }
+        else {
+            Write-Host "NOT FOUND" -ForegroundColor Red
+            $issues += @{ Name = "Hyper-V vmms"; Issue = "Service not registered"; CanFix = $false }
+            $failed++
+        }
+
+        # 13b. Hyper-V default paths
+        $hvSettings = $settings.HyperV
+        if ($hvSettings) {
+            Write-Host "  Hyper-V Paths                    " -NoNewline
+            $hvAllPaths = @($hvSettings.DefaultVMPath, $hvSettings.DefaultVHDPath, $hvSettings.DefaultBackupPath) | Where-Object { $_ }
+            $missingHvPaths = @($hvAllPaths | Where-Object { -not (Test-Path $_) })
+            if ($missingHvPaths.Count -eq 0) {
+                Write-Host "OK" -ForegroundColor Green
+                $passed++
+            }
+            else {
+                Write-Host "MISSING" -ForegroundColor Yellow
+                $issues += @{ Name = "Hyper-V Paths"; Issue = "Missing: $($missingHvPaths -join ', ')"; CanFix = $true }
+                $failed++
+                if ($AutoFix) {
+                    foreach ($dir in $missingHvPaths) {
+                        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+                        Write-Step "Created: $dir" -Type Success
+                    }
+                    Write-Log "Doctor: Auto-created Hyper-V directories."
+                }
+            }
+        }
+
+        # 13c. VHD integrity (check if VHD files exist for each VM)
+        if (Get-Command Get-VM -ErrorAction SilentlyContinue) {
+            Write-Host "  VM Disk Integrity                " -NoNewline
+            $allVMs = @(Get-VM -ErrorAction SilentlyContinue)
+            $missingVHDs = @()
+            foreach ($vm in $allVMs) {
+                $disks = @(Get-VMHardDiskDrive -VMName $vm.Name -ErrorAction SilentlyContinue)
+                foreach ($disk in $disks) {
+                    if ($disk.Path -and -not (Test-Path $disk.Path)) {
+                        $missingVHDs += "$($vm.Name): $($disk.Path)"
+                    }
+                }
+            }
+            if ($missingVHDs.Count -eq 0) {
+                Write-Host "OK" -ForegroundColor Green
+                $passed++
+            }
+            else {
+                Write-Host "MISSING VHDs ($($missingVHDs.Count))" -ForegroundColor Red
+                $issues += @{ Name = "VM Disks"; Issue = "Missing VHD files: $($missingVHDs -join '; ')"; CanFix = $false }
+                $failed++
+            }
+
+            # 13d. Disconnected NICs (VMs pointing to removed switches)
+            Write-Host "  VM Network Adapters              " -NoNewline
+            $disconnectedNICs = @()
+            foreach ($vm in $allVMs) {
+                $adapters = @(Get-VMNetworkAdapter -VMName $vm.Name -ErrorAction SilentlyContinue)
+                foreach ($nic in $adapters) {
+                    if (-not $nic.Connected -and $nic.SwitchName) {
+                        $sw = Get-VMSwitch -Name $nic.SwitchName -ErrorAction SilentlyContinue
+                        if (-not $sw) {
+                            $disconnectedNICs += "$($vm.Name) -> $($nic.SwitchName)"
+                        }
+                    }
+                }
+            }
+            if ($disconnectedNICs.Count -eq 0) {
+                Write-Host "OK" -ForegroundColor Green
+                $passed++
+            }
+            else {
+                Write-Host "DISCONNECTED ($($disconnectedNICs.Count))" -ForegroundColor Yellow
+                $issues += @{ Name = "VM NICs"; Issue = "Disconnected: $($disconnectedNICs -join '; ')"; CanFix = $false }
+                $failed++
+            }
+
+            # 13e. Checkpoint health (count and age)
+            Write-Host "  VM Checkpoints                   " -NoNewline
+            $cpRetention = if ($hvSettings -and $hvSettings.CheckpointRetention) { $hvSettings.CheckpointRetention } else { $null }
+            $maxAge = if ($cpRetention -and $cpRetention.MaxAgeDays) { [int]$cpRetention.MaxAgeDays } else { 30 }
+            $maxPerVM = if ($cpRetention -and $cpRetention.MaxPerVM) { [int]$cpRetention.MaxPerVM } else { 5 }
+            $cpWarnings = @()
+            foreach ($vm in $allVMs) {
+                $cps = @(Get-VMCheckpoint -VMName $vm.Name -ErrorAction SilentlyContinue)
+                if ($cps.Count -gt $maxPerVM) {
+                    $cpWarnings += "$($vm.Name): $($cps.Count) checkpoints (max $maxPerVM)"
+                }
+                $oldCPs = @($cps | Where-Object { $_.CreationTime -lt (Get-Date).AddDays(-$maxAge) })
+                if ($oldCPs.Count -gt 0) {
+                    $cpWarnings += "$($vm.Name): $($oldCPs.Count) older than $maxAge days"
+                }
+            }
+            if ($cpWarnings.Count -eq 0) {
+                Write-Host "OK" -ForegroundColor Green
+                $passed++
+            }
+            else {
+                Write-Host "NEEDS CLEANUP ($($cpWarnings.Count) warnings)" -ForegroundColor Yellow
+                $issues += @{ Name = "Checkpoints"; Issue = "$($cpWarnings -join '; ')"; CanFix = $true }
+                $failed++
+                if ($AutoFix) {
+                    Write-Step "Run Hyper-V > Checkpoint > Cleanup to auto-clean old checkpoints." -Type Info
+                }
+            }
+
+            # 13f. VHD drive free space
+            if ($hvSettings -and $hvSettings.DefaultVHDPath) {
+                Write-Host "  VHD Drive Free Space             " -NoNewline
+                try {
+                    $vhdDrive = $hvSettings.DefaultVHDPath.Substring(0, 1)
+                    $driveInfo = Get-PSDrive -Name $vhdDrive -ErrorAction SilentlyContinue
+                    if ($driveInfo -and $driveInfo.Free) {
+                        $freeGB = [math]::Round($driveInfo.Free / 1GB, 1)
+                        if ($freeGB -ge 10) {
+                            Write-Host "OK ($freeGB GB free on $($vhdDrive):)" -ForegroundColor Green
+                            $passed++
+                        }
+                        else {
+                            Write-Host "LOW ($freeGB GB free on $($vhdDrive):)" -ForegroundColor Red
+                            $issues += @{ Name = "VHD Disk Space"; Issue = "Only $freeGB GB free on drive $($vhdDrive):"; CanFix = $false }
+                            $failed++
+                        }
+                    }
+                    else {
+                        Write-Host "UNKNOWN" -ForegroundColor DarkGray
+                    }
+                }
+                catch {
+                    Write-Host "UNKNOWN" -ForegroundColor DarkGray
+                }
+            }
+
+            # 13g. Orphaned VHD files (VHDs not attached to any VM)
+            if ($hvSettings -and $hvSettings.DefaultVHDPath -and (Test-Path $hvSettings.DefaultVHDPath)) {
+                Write-Host "  Orphaned VHD Files               " -NoNewline
+                $allVHDFiles = @(Get-ChildItem -Path $hvSettings.DefaultVHDPath -Filter "*.vhdx" -Recurse -ErrorAction SilentlyContinue)
+                $attachedVHDs = @()
+                foreach ($vm in $allVMs) {
+                    $disks = @(Get-VMHardDiskDrive -VMName $vm.Name -ErrorAction SilentlyContinue)
+                    foreach ($d in $disks) { if ($d.Path) { $attachedVHDs += $d.Path.ToLower() } }
+                }
+                $orphanedVHDs = @($allVHDFiles | Where-Object { $_.FullName.ToLower() -notin $attachedVHDs })
+                if ($orphanedVHDs.Count -eq 0) {
+                    Write-Host "OK" -ForegroundColor Green
+                    $passed++
+                }
+                else {
+                    $orphanSizeGB = [math]::Round(($orphanedVHDs | Measure-Object -Property Length -Sum).Sum / 1GB, 1)
+                    Write-Host "$($orphanedVHDs.Count) found (${orphanSizeGB} GB)" -ForegroundColor Yellow
+                    $orphanNames = ($orphanedVHDs | Select-Object -First 3 | ForEach-Object { $_.Name }) -join ', '
+                    $issues += @{ Name = "Orphaned VHDs"; Issue = "$($orphanedVHDs.Count) files (${orphanSizeGB} GB): $orphanNames"; CanFix = $true }
+                    $failed++
+                    if ($AutoFix) {
+                        Write-Step "Auto-removing orphaned VHD files..." -Type Info
+                        foreach ($orphan in $orphanedVHDs) {
+                            try {
+                                Remove-Item $orphan.FullName -Force -ErrorAction Stop
+                                Write-Step "Deleted: $($orphan.Name)" -Type Info
+                            }
+                            catch { Write-Step "Failed to delete '$($orphan.Name)': $_" -Type Error }
+                        }
+                        Write-Log "Doctor: Removed $($orphanedVHDs.Count) orphaned VHD files."
+                    }
+                }
+            }
+        }
+    }
+
+    # =========================================================================
+    # 14. Settings File Integrity
     # =========================================================================
     Write-Host "  Settings File                    " -NoNewline
     $requiredKeys = @("BasePath", "UsersRoot", "LogsPath", "SSHConfigPath", "SFTPOnlyGroup")

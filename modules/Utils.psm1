@@ -92,6 +92,66 @@ function Test-InteractiveConsole {
     catch { return $false }
 }
 
+function Write-MenuItemLine {
+    <# Renders a single menu item line. Used by Select-MenuOption for both
+       initial render and partial updates (no-flicker). #>
+    param(
+        [hashtable]$Item,
+        [bool]$IsSelected,
+        [int]$MenuWidth = 60
+    )
+    $key = $Item.Key
+    $label = $Item.Label
+    $status = $Item.Status
+
+    # Build status text
+    $statusText = ""
+    if ($status) {
+        $statusText = switch ($status) {
+            "OK"   { " [OK]" }
+            "FAIL" { " [NOT CONFIGURED]" }
+            default { " [$status]" }
+        }
+    }
+
+    if ($IsSelected) {
+        Write-Host "  > " -ForegroundColor White -NoNewline
+        Write-Host "[$key]" -ForegroundColor Black -BackgroundColor Yellow -NoNewline
+        Write-Host " $label" -ForegroundColor White -BackgroundColor DarkCyan -NoNewline
+        if ($statusText) {
+            $statusColor = switch -Regex ($status) {
+                "^OK"       { "Green" }
+                "^FAIL"     { "Red" }
+                "^\d+ user" { "Cyan" }
+                default     { "DarkYellow" }
+            }
+            Write-Host $statusText -ForegroundColor $statusColor -BackgroundColor DarkCyan -NoNewline
+        }
+        # Pad to fixed width with background color, then reset
+        $contentLen = 4 + $key.Length + 2 + $label.Length + $statusText.Length
+        $pad = [Math]::Max(1, $MenuWidth - $contentLen)
+        Write-Host (" " * $pad) -BackgroundColor DarkCyan
+    }
+    else {
+        Write-Host "    " -NoNewline
+        Write-Host "[$key]" -ForegroundColor Yellow -NoNewline
+        Write-Host " $label" -NoNewline
+        if ($statusText) {
+            $statusColor = switch -Regex ($status) {
+                "^OK"       { "Green" }
+                "^FAIL"     { "Red" }
+                "^\d+ user" { "Cyan" }
+                default     { "DarkYellow" }
+            }
+            Write-Host $statusText -ForegroundColor $statusColor -NoNewline
+        }
+        # Pad to clear any leftover characters from selected state
+        $contentLen = 4 + $key.Length + 2 + $label.Length + $statusText.Length
+        $pad = [Math]::Max(1, $MenuWidth - $contentLen)
+        Write-Host (" " * $pad)
+    }
+}
+
 function Select-MenuOption {
     <#
     .SYNOPSIS
@@ -118,78 +178,40 @@ function Select-MenuOption {
     try { $savedCursor = [Console]::CursorVisible } catch {}
     try { [Console]::CursorVisible = $false } catch {}
 
+    # Build a map: selectableIndex -> screen row (filled after first render)
+    $itemRowMap = @{}
+    $menuWidth = 60
+
     try {
-        while ($true) {
-            Clear-Host
-            if ($BeforeRender) { & $BeforeRender }
-            if ($Title) { Write-MenuHeader $Title }
-            Write-Host ""
+        # --- First render: draw full screen once ---
+        Clear-Host
+        if ($BeforeRender) { & $BeforeRender }
+        if ($Title) { Write-MenuHeader $Title }
+        Write-Host ""
 
-            $selectableIdx = 0
-            foreach ($item in $Items) {
-                if ($item.Separator) {
-                    Write-Separator
-                    continue
-                }
-
-                $isSelected = ($selectableIdx -eq $selectedIndex)
-                $key = $item.Key
-                $label = $item.Label
-                $status = $item.Status
-
-                if ($isSelected) {
-                    Write-Host "  > " -ForegroundColor White -NoNewline
-                    Write-Host "[$key]" -ForegroundColor Black -BackgroundColor Yellow -NoNewline
-                    Write-Host " $label" -ForegroundColor White -BackgroundColor DarkCyan -NoNewline
-                    if ($status) {
-                        $statusText = switch ($status) {
-                            "OK"   { " [OK]" }
-                            "FAIL" { " [NOT CONFIGURED]" }
-                            default { " [$status]" }
-                        }
-                        $statusColor = switch -Regex ($status) {
-                            "^OK"       { "Green" }
-                            "^FAIL"     { "Red" }
-                            "^\d+ user" { "Cyan" }
-                            default     { "DarkYellow" }
-                        }
-                        Write-Host $statusText -ForegroundColor $statusColor -BackgroundColor DarkCyan -NoNewline
-                    }
-                    $lineLen = 4 + $key.Length + 2 + $label.Length + 1
-                    if ($status) {
-                        $st = switch ($status) { "OK" { " [OK]" }; "FAIL" { " [NOT CONFIGURED]" }; default { " [$status]" } }
-                        $lineLen += $st.Length
-                    }
-                    $pad = [Math]::Max(0, 56 - $lineLen + 4)
-                    Write-Host (" " * $pad) -BackgroundColor DarkCyan
-                }
-                else {
-                    Write-Host "    " -NoNewline
-                    Write-Host "[$key]" -ForegroundColor Yellow -NoNewline
-                    Write-Host " $label" -NoNewline
-                    if ($status) {
-                        switch ($status) {
-                            "OK"   { Write-Host " [OK]" -ForegroundColor Green }
-                            "FAIL" { Write-Host " [NOT CONFIGURED]" -ForegroundColor Red }
-                            default {
-                                $c = if ($status -match "^\d+ user") { "Cyan" } else { "DarkYellow" }
-                                Write-Host " [$status]" -ForegroundColor $c
-                            }
-                        }
-                    }
-                    else { Write-Host "" }
-                }
-                $selectableIdx++
+        $selectableIdx = 0
+        foreach ($item in $Items) {
+            if ($item.Separator) {
+                Write-Separator
+                continue
             }
+            # Record which screen row this item starts on
+            $itemRowMap[$selectableIdx] = [Console]::CursorTop
+            Write-MenuItemLine -Item $item -IsSelected ($selectableIdx -eq $selectedIndex) -MenuWidth $menuWidth
+            $selectableIdx++
+        }
 
-            Write-Host ""
-            Write-Host "  Use " -ForegroundColor DarkGray -NoNewline
-            Write-Host "[Up/Down]" -ForegroundColor Cyan -NoNewline
-            Write-Host " to navigate, " -ForegroundColor DarkGray -NoNewline
-            Write-Host "[Enter]" -ForegroundColor Cyan -NoNewline
-            Write-Host " to select, or press a shortcut key" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "  Use " -ForegroundColor DarkGray -NoNewline
+        Write-Host "[Up/Down]" -ForegroundColor Cyan -NoNewline
+        Write-Host " to navigate, " -ForegroundColor DarkGray -NoNewline
+        Write-Host "[Enter]" -ForegroundColor Cyan -NoNewline
+        Write-Host " to select, or press a shortcut key" -ForegroundColor DarkGray
 
+        # --- Input loop: only redraw changed lines ---
+        while ($true) {
             $keyInfo = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+            $prevIndex = $selectedIndex
 
             switch ($keyInfo.VirtualKeyCode) {
                 38 { $selectedIndex = if ($selectedIndex -gt 0) { $selectedIndex - 1 } else { $selectableItems.Count - 1 } }
@@ -202,6 +224,20 @@ function Select-MenuOption {
                         $match = $selectableItems | Where-Object { $_.Key -eq $typed }
                         if ($match) { return $typed }
                     }
+                }
+            }
+
+            # Only redraw if selection changed
+            if ($selectedIndex -ne $prevIndex) {
+                # Redraw old line (deselect)
+                if ($itemRowMap.ContainsKey($prevIndex)) {
+                    [Console]::SetCursorPosition(0, $itemRowMap[$prevIndex])
+                    Write-MenuItemLine -Item $selectableItems[$prevIndex] -IsSelected $false -MenuWidth $menuWidth
+                }
+                # Redraw new line (select)
+                if ($itemRowMap.ContainsKey($selectedIndex)) {
+                    [Console]::SetCursorPosition(0, $itemRowMap[$selectedIndex])
+                    Write-MenuItemLine -Item $selectableItems[$selectedIndex] -IsSelected $true -MenuWidth $menuWidth
                 }
             }
         }

@@ -19,5 +19,19 @@
     },
     "PowerShellLogging": {
         "TranscriptionPath": "C:\\WinGateKeeper\\Logs\\Transcripts"
+    },
+    "HyperV": {
+        "DefaultVMPath": "C:\\HyperV\\VMs",
+        "DefaultVHDPath": "C:\\HyperV\\VHDs",
+        "DefaultBackupPath": "C:\\HyperV\\Backups",
+        "DefaultSwitchName": "Default Switch",
+        "DefaultRAMGB": 2,
+        "DefaultCPUCount": 2,
+        "DefaultDiskSizeGB": 50,
+        "DefaultGeneration": 2,
+        "CheckpointRetention": {
+            "MaxAgeDays": 30,
+            "MaxPerVM": 5
+        }
     }
 }
