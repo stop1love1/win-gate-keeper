@@ -21,6 +21,7 @@ Import-Module "$modulePath\SystemReset.psm1" -Force
 Import-Module "$modulePath\SSHHardening.psm1" -Force
 Import-Module "$modulePath\RDPManager.psm1" -Force
 Import-Module "$modulePath\AppControl.psm1" -Force
+Import-Module "$modulePath\HardwareInventory.psm1" -Force
 
 $script:_statusCache = $null
 $script:_statusCacheTime = [datetime]::MinValue
@@ -69,6 +70,17 @@ function Get-QuickStatus {
     $rdpReg = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -ErrorAction SilentlyContinue
     $status.RDP = if ($rdpReg -and $rdpReg.fDenyTSConnections -eq 0) { "OK" } else { "FAIL" }
 
+    # Hardware baseline (lightweight — does not collect live snapshot)
+    try {
+        $hwStatus = Test-HardwareBaselineQuickStatus
+        $status.HW = switch ($hwStatus) {
+            "OK"     { "OK" }
+            "NONE"   { "NO BASELINE" }
+            "TAMPER" { "TAMPERED" }
+            default  { "?" }
+        }
+    } catch { $status.HW = "?" }
+
     $script:_statusCache = $status
     $script:_statusCacheTime = [datetime]::Now
     return $status
@@ -90,6 +102,7 @@ function Show-MainMenu {
             @{ Key = "7"; Label = "Application Control" }
             @{ Separator = $true }
             @{ Key = "8"; Label = "Audit & Logging"; Status = $st.Audit }
+            @{ Key = "H"; Label = "Machine Inspection (hardware report)"; Status = $st.HW }
             @{ Key = "S"; Label = "System Status Overview" }
             @{ Key = "D"; Label = "Doctor (Health Check & Auto-Fix)" }
             @{ Separator = $true }
@@ -110,6 +123,7 @@ function Show-MainMenu {
             "6" { Show-RDPMenu; $script:_statusCache = $null }
             "7" { Show-AppControlMenu; $script:_statusCache = $null }
             "8" { Show-AuditMenu; $script:_statusCache = $null }
+            "H" { Show-HardwareMenu; $script:_statusCache = $null }
             "S" { Show-SystemOverview }
             "D" { Show-DoctorMenu; $script:_statusCache = $null }
             "C" { Edit-Configuration; $script:_statusCache = $null }

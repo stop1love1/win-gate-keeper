@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(wc -l /d/projects/win-gate-keeper/main.ps1 /d/projects/win-gate-keeper/modules/*.psm1)"
+      "Bash(*)",
+      "PowerShell(*)"
     ]
   }
 }

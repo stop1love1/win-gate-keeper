@@ -4,6 +4,7 @@
 # ============================================================================
 
 Import-Module "$PSScriptRoot\Utils.psm1" -Force
+Import-Module "$PSScriptRoot\HardwareInventory.psm1" -Force
 
 function Invoke-Doctor {
     param(
@@ -339,7 +340,37 @@ function Invoke-Doctor {
     }
 
     # =========================================================================
-    # 13. Settings File Integrity
+    # 13. Hardware Baseline Integrity
+    # =========================================================================
+    Write-Host "  Hardware Baseline                " -NoNewline
+    try {
+        $hwStatus = Test-HardwareBaselineQuickStatus
+        switch ($hwStatus) {
+            "OK" {
+                Write-Host "OK (hash verified)" -ForegroundColor Green
+                $passed++
+            }
+            "NONE" {
+                Write-Host "NOT SET" -ForegroundColor DarkYellow
+                $issues += @{ Name = "Hardware Baseline"; Issue = "No baseline captured - run Hardware menu to set one"; CanFix = $false }
+                $failed++
+            }
+            "TAMPER" {
+                Write-Host "TAMPERED" -ForegroundColor Red
+                $issues += @{ Name = "Hardware Baseline"; Issue = "Baseline file hash mismatch - file modified outside this tool"; CanFix = $false }
+                $failed++
+            }
+            default {
+                Write-Host "UNKNOWN ($hwStatus)" -ForegroundColor Yellow
+            }
+        }
+    } catch {
+        Write-Host "ERROR" -ForegroundColor Red
+        $failed++
+    }
+
+    # =========================================================================
+    # 14. Settings File Integrity
     # =========================================================================
     Write-Host "  Settings File                    " -NoNewline
     $requiredKeys = @("BasePath", "UsersRoot", "LogsPath", "SSHConfigPath", "SFTPOnlyGroup")

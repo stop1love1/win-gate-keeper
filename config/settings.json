@@ -19,5 +19,38 @@
     },
     "PowerShellLogging": {
         "TranscriptionPath": "C:\\WinGateKeeper\\Logs\\Transcripts"
+    },
+    "HardwareInventory": {
+        "BaselinePath": "C:\\WinGateKeeper\\hardware-baseline.json",
+        "ReportsPath": "C:\\WinGateKeeper\\HardwareReports",
+        "Enabled": true,
+        "Thresholds": {
+            "DiskPowerOnHoursWarn": 10000,
+            "DiskPowerOnHoursFail": 20000,
+            "SSDWearWarnPercent": 50,
+            "SSDWearFailPercent": 80,
+            "DiskTempWarnCelsius": 60,
+            "DiskFreeSpaceWarnPercent": 15,
+            "DiskFreeSpaceFailPercent": 5,
+            "BatteryWearWarnPercent": 15,
+            "BatteryWearFailPercent": 30,
+            "OSInstallRecentWarnDays": 60,
+            "WHEALookbackDays": 90,
+            "BSODLookbackDays": 90,
+            "BSODWarnCount": 3,
+            "UnexpectedShutdownLookbackDays": 90,
+            "UnexpectedShutdownWarnCount": 5,
+            "GPUDriverCrashLookbackDays": 90,
+            "GPUDriverCrashWarnCount": 3,
+            "EventLookbackDays": 7,
+            "RAMMismatchToleranceBytes": 1073741824,
+            "RecentInstallLookbackDays": 30,
+            "USBHistoryShowLast": 25,
+            "BenchmarkDiskSizeMB": 100,
+            "BenchmarkCPUIterations": 500,
+            "BenchmarkMemorySizeMB": 50,
+            "BenchmarkMemoryIterations": 10,
+            "RunBenchmarks": true
+        }
     }
 }
