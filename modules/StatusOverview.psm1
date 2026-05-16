@@ -119,7 +119,27 @@ function Show-SystemOverview {
         $allGood = $false
     }
 
-    # 7. User count
+    # 7. Hyper-V
+    Write-Host "  Hyper-V Role                     " -NoNewline
+    $hvFeature = Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-All -ErrorAction SilentlyContinue
+    if ($hvFeature -and $hvFeature.State -eq 'Enabled') {
+        $vmms = Get-Service -Name vmms -ErrorAction SilentlyContinue
+        if ($vmms -and $vmms.Status -eq 'Running') {
+            $hvVMs = @(Get-VM -ErrorAction SilentlyContinue)
+            $vmCount = $hvVMs.Count
+            $runningCount = @($hvVMs | Where-Object State -eq 'Running').Count
+            Write-Host "OK ($runningCount running / $vmCount total)" -ForegroundColor Green
+        }
+        else {
+            Write-Host "INSTALLED (vmms not running)" -ForegroundColor Yellow
+            $allGood = $false
+        }
+    }
+    else {
+        Write-Host "NOT INSTALLED" -ForegroundColor DarkGray
+    }
+
+    # 8. User count
     $builtIn = @("Administrator", "DefaultAccount", "Guest", "WDAGUtilityAccount")
     $userCount = @(Get-LocalUser | Where-Object { $_.Name -notin $builtIn }).Count
     Write-Host ""

@@ -22,9 +22,12 @@ Import-Module "$modulePath\SSHHardening.psm1" -Force
 Import-Module "$modulePath\RDPManager.psm1" -Force
 Import-Module "$modulePath\AppControl.psm1" -Force
 Import-Module "$modulePath\HardwareInventory.psm1" -Force
+Import-Module "$modulePath\HyperVManager.psm1" -Force
 
 $script:_statusCache = $null
 $script:_statusCacheTime = [datetime]::MinValue
+# Hyper-V feature state only changes after reboot - cache once per session
+$script:_hvFeatureEnabled = $null
 
 function Get-QuickStatus {
     # Return cached result if less than 30 seconds old
@@ -70,7 +73,7 @@ function Get-QuickStatus {
     $rdpReg = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -ErrorAction SilentlyContinue
     $status.RDP = if ($rdpReg -and $rdpReg.fDenyTSConnections -eq 0) { "OK" } else { "FAIL" }
 
-    # Hardware baseline (lightweight — does not collect live snapshot)
+    # Hardware baseline (lightweight - does not collect live snapshot)
     try {
         $hwStatus = Test-HardwareBaselineQuickStatus
         $status.HW = switch ($hwStatus) {
@@ -80,6 +83,18 @@ function Get-QuickStatus {
             default  { "?" }
         }
     } catch { $status.HW = "?" }
+
+    # Hyper-V (feature check cached per session - only changes after reboot)
+    if ($null -eq $script:_hvFeatureEnabled) {
+        $hvFeature = Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-All -ErrorAction SilentlyContinue
+        $script:_hvFeatureEnabled = ($hvFeature -and $hvFeature.State -eq 'Enabled')
+    }
+    if ($script:_hvFeatureEnabled) {
+        $vmCount = @(Get-VM -ErrorAction SilentlyContinue).Count
+        $status.HyperV = "$vmCount VMs"
+    } else {
+        $status.HyperV = "N/A"
+    }
 
     $script:_statusCache = $status
     $script:_statusCacheTime = [datetime]::Now
@@ -102,6 +117,7 @@ function Show-MainMenu {
             @{ Key = "7"; Label = "Application Control" }
             @{ Separator = $true }
             @{ Key = "8"; Label = "Audit & Logging"; Status = $st.Audit }
+            @{ Key = "9"; Label = "Hyper-V Management"; Status = $st.HyperV }
             @{ Key = "H"; Label = "Machine Inspection (hardware report)"; Status = $st.HW }
             @{ Key = "S"; Label = "System Status Overview" }
             @{ Key = "D"; Label = "Doctor (Health Check & Auto-Fix)" }
@@ -122,6 +138,7 @@ function Show-MainMenu {
             "5" { Show-SSHSecurityMenu; $script:_statusCache = $null }
             "6" { Show-RDPMenu; $script:_statusCache = $null }
             "7" { Show-AppControlMenu; $script:_statusCache = $null }
+            "9" { Show-HyperVMenu; $script:_statusCache = $null }
             "8" { Show-AuditMenu; $script:_statusCache = $null }
             "H" { Show-HardwareMenu; $script:_statusCache = $null }
             "S" { Show-SystemOverview }
@@ -185,6 +202,10 @@ function Edit-Configuration {
     Write-Host "  SSH Config:       $($settings.SSHConfigPath)" -ForegroundColor Cyan
     Write-Host "  SFTP Group:       $($settings.SFTPOnlyGroup)" -ForegroundColor Cyan
     Write-Host "  Transcripts:      $($settings.PowerShellLogging.TranscriptionPath)" -ForegroundColor Cyan
+    if ($settings.HyperV) {
+        Write-Host "  HyperV VM Path:   $($settings.HyperV.DefaultVMPath)" -ForegroundColor Cyan
+        Write-Host "  HyperV VHD Path:  $($settings.HyperV.DefaultVHDPath)" -ForegroundColor Cyan
+    }
 
     Write-Host ""
     Write-MenuOption "1" "Change Base Path"

@@ -208,6 +208,7 @@ function Invoke-FactoryReset {
     Write-Host "  5. Delete WinGateKeeper logs" -ForegroundColor White
     Write-Host "  6. Delete base directories ($($Settings.BasePath))" -ForegroundColor White
     Write-Host "  7. Disable audit policies set by WinGateKeeper" -ForegroundColor White
+    Write-Host "  8. Stop & remove ALL Hyper-V VMs, switches, and data" -ForegroundColor White
     Write-Host ""
     Write-Host "  OpenSSH Server will NOT be uninstalled." -ForegroundColor Yellow
     Write-Host "  Settings file (config/settings.json) will be preserved." -ForegroundColor Yellow
@@ -233,7 +234,7 @@ function Invoke-FactoryReset {
 
     # Step 1: Remove all managed users
     Write-Host ""
-    Write-Step "Step 1/7: Removing managed users..." -Type Info
+    Write-Step "Step 1/8: Removing managed users..." -Type Info
     $builtIn = @("Administrator", "DefaultAccount", "Guest", "WDAGUtilityAccount")
     $users = @(Get-LocalUser | Where-Object { $_.Name -notin $builtIn })
     foreach ($user in $users) {
@@ -247,7 +248,7 @@ function Invoke-FactoryReset {
     }
 
     # Step 2: Delete user directories
-    Write-Step "Step 2/7: Deleting user directories..." -Type Info
+    Write-Step "Step 2/8: Deleting user directories..." -Type Info
     if (Test-Path $Settings.UsersRoot) {
         $userDirs = Get-ChildItem -Path $Settings.UsersRoot -Directory -ErrorAction SilentlyContinue
         foreach ($dir in $userDirs) {
@@ -262,7 +263,7 @@ function Invoke-FactoryReset {
     }
 
     # Step 3: Remove SFTP group
-    Write-Step "Step 3/7: Removing SFTP group..." -Type Info
+    Write-Step "Step 3/8: Removing SFTP group..." -Type Info
     try {
         $group = Get-LocalGroup -Name $Settings.SFTPOnlyGroup -ErrorAction SilentlyContinue
         if ($group) {
@@ -278,7 +279,7 @@ function Invoke-FactoryReset {
     }
 
     # Step 4: Clean sshd_config
-    Write-Step "Step 4/7: Cleaning sshd_config..." -Type Info
+    Write-Step "Step 4/8: Cleaning sshd_config..." -Type Info
     $sshdConfig = $Settings.SSHConfigPath
     if (Test-Path $sshdConfig) {
         try {
@@ -311,7 +312,7 @@ function Invoke-FactoryReset {
     }
 
     # Step 5: Delete logs
-    Write-Step "Step 5/7: Deleting WinGateKeeper logs..." -Type Info
+    Write-Step "Step 5/8: Deleting WinGateKeeper logs..." -Type Info
     if (Test-Path $Settings.LogsPath) {
         try {
             Get-ChildItem -Path $Settings.LogsPath -Recurse -Force -ErrorAction SilentlyContinue |
@@ -324,7 +325,7 @@ function Invoke-FactoryReset {
     }
 
     # Step 6: Delete base directories
-    Write-Step "Step 6/7: Deleting base directories..." -Type Info
+    Write-Step "Step 6/8: Deleting base directories..." -Type Info
     if (Test-Path $Settings.BasePath) {
         try {
             Remove-Item -Path $Settings.BasePath -Recurse -Force -ErrorAction Stop
@@ -336,7 +337,7 @@ function Invoke-FactoryReset {
     }
 
     # Step 7: Disable WinGateKeeper audit policies
-    Write-Step "Step 7/7: Resetting audit policies..." -Type Info
+    Write-Step "Step 7/8: Resetting audit policies..." -Type Info
     try {
         # Remove PowerShell logging policies
         $psPolicies = @(
@@ -353,6 +354,71 @@ function Invoke-FactoryReset {
     }
     catch {
         Write-Step "Failed to reset some policies: $_" -Type Warning
+    }
+
+    # Step 8: Hyper-V cleanup
+    Write-Step "Step 8/8: Cleaning up Hyper-V resources..." -Type Info
+    if (Get-Command Get-VM -ErrorAction SilentlyContinue) {
+        $hvVMs = @(Get-VM -ErrorAction SilentlyContinue)
+        if ($hvVMs.Count -gt 0) {
+            foreach ($vm in $hvVMs) {
+                try {
+                    if ($vm.State -ne 'Off') {
+                        Stop-VM -Name $vm.Name -Force -TurnOff -ErrorAction Stop
+                    }
+                    # Get VHD paths before removal
+                    $vhds = @(Get-VMHardDiskDrive -VMName $vm.Name -ErrorAction SilentlyContinue |
+                        Where-Object { $_.Path } | Select-Object -ExpandProperty Path)
+                    Remove-VM -Name $vm.Name -Force -ErrorAction Stop
+                    # Delete associated VHDs
+                    foreach ($vhd in $vhds) {
+                        if (Test-Path $vhd) {
+                            Remove-Item $vhd -Force -ErrorAction SilentlyContinue
+                        }
+                    }
+                    Write-Step "Removed VM: $($vm.Name)" -Type Info
+                }
+                catch {
+                    Write-Step "Failed to remove VM '$($vm.Name)': $_" -Type Error
+                }
+            }
+        }
+        else {
+            Write-Step "No VMs found." -Type Info
+        }
+
+        # Remove virtual switches (except Default Switch)
+        $switches = @(Get-VMSwitch -ErrorAction SilentlyContinue | Where-Object Name -ne 'Default Switch')
+        foreach ($sw in $switches) {
+            try {
+                Remove-VMSwitch -Name $sw.Name -Force -ErrorAction Stop
+                Write-Step "Removed switch: $($sw.Name)" -Type Info
+            }
+            catch {
+                Write-Step "Failed to remove switch '$($sw.Name)': $_" -Type Error
+            }
+        }
+
+        # Delete Hyper-V directories
+        $hvSettings = $Settings.HyperV
+        if ($hvSettings) {
+            $hvPaths = @($hvSettings.DefaultVMPath, $hvSettings.DefaultVHDPath, $hvSettings.DefaultBackupPath) | Where-Object { $_ }
+            foreach ($p in $hvPaths) {
+                if (Test-Path $p) {
+                    try {
+                        Remove-Item -Path $p -Recurse -Force -ErrorAction Stop
+                        Write-Step "Deleted: $p" -Type Info
+                    }
+                    catch {
+                        Write-Step "Failed to delete '$p': $_" -Type Error
+                    }
+                }
+            }
+        }
+        Write-Step "Hyper-V cleanup done." -Type Success
+    }
+    else {
+        Write-Step "Hyper-V not available, skipping." -Type Info
     }
 
     Write-Host ""
